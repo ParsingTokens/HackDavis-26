@@ -1,14 +1,30 @@
-.env
-.env.local
+# Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
 venv/
 .venv/
+ENV/
+env/
+.env
+.env.local
 *.egg-info/
 dist/
 build/
-data/
-*.bsp
+
+# Node
 node_modules/
 .next/
+dist/
+.DS_Store
+
+# Large data files
+data/
+*.bsp
+*.pkl
+*.csv
+*.geojson
+
+# IDEs
+.vscode/
+.idea/

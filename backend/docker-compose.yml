@@ -1,20 +1,15 @@
+version: '3.8'
 services:
-  postgis:
-    image: postgis/postgis:16-3.4
-    container_name: thermal_routing_db
+  db:
+    image: postgis/postgis:15-3.4
     environment:
-      POSTGRES_USER: thermal
-      POSTGRES_PASSWORD: thermal_secret
-      POSTGRES_DB: thermal_routing
+      - POSTGRES_USER=canopy
+      - POSTGRES_PASSWORD=canopy
+      - POSTGRES_DB=canopy_db
     ports:
       - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U thermal -d thermal_routing"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+      - postgis_data:/var/lib/postgresql/data
 
 volumes:
-  pgdata:
+  postgis_data:
