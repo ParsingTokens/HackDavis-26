@@ -38,26 +38,29 @@ const getTreeColor = (name) => {
 
 const generateSquigglyRays = (sunAzimuth) => {
   const rays = [];
-  for (let i = 0; i < 600; i++) {
+  for (let i = 0; i < 1200; i++) {
+    // Coverage for entire Davis area
     const lat = 38.52 + Math.random() * 0.06;
-    const lon = -121.78 + Math.random() * 0.06;
+    const lon = -121.78 + Math.random() * 0.07;
     const path = [];
-    const segments = 10;
-    let currZ = 200 + Math.random() * 150;
+    const segments = 12;
+    let currZ = 250 + Math.random() * 200;
     let currLon = lon;
     let currLat = lat;
     for (let j = 0; j < segments; j++) {
       path.push([currLon, currLat, currZ]);
-      currZ -= 35;
-      currLon += 0.0002 + (Math.random() - 0.5) * 0.0004;
-      currLat -= 0.0002 + (Math.random() - 0.5) * 0.0004;
+      currZ -= 30;
+      currLon += 0.00015 + (Math.random() - 0.5) * 0.0003;
+      currLat -= 0.00015 + (Math.random() - 0.5) * 0.0003;
     }
     const startOffset = Math.random() * 8000;
-    const timestamps = path.map((_, idx) => startOffset + (idx * 500));
+    const timestamps = path.map((_, idx) => startOffset + (idx * 600));
     rays.push({ path, timestamps });
   }
   return rays;
 };
+
+const TREE_ICON_SVG = `data:image/svg+xml;base64,${btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="35" r="30" fill="#2e7d32"/><circle cx="35" cy="55" r="25" fill="#388e3c"/><circle cx="65" cy="55" r="25" fill="#43a047"/><rect x="44" y="70" width="12" height="25" fill="#5d4037"/></svg>')}`;
 
 function SearchInput({ placeholder, value, onChange, onSelect }) {
   const [results, setResults] = useState([]);
@@ -113,9 +116,10 @@ function App() {
   const [activeRoute, setActiveRoute] = useState('coolest');
   
   const [treesData, setTreesData] = useState(null);
+  const [buildingsData, setBuildingsData] = useState(null);
   const [communitySpots, setCommunitySpots] = useState(null);
   const [weather, setWeather] = useState(null);
-  const [sunPosition, setSunPosition] = useState({ altitude: 63, azimuth: 222 });
+  const [sunPosition, setSunPosition] = useState({ altitude: 63, azimuth: 222, uv_index: 0 });
   const [raysData, setRaysData] = useState([]);
   const [time, setTime] = useState(0);
   const [selectedSpot, setSelectedSpot] = useState(null);
@@ -124,6 +128,7 @@ function App() {
 
   useEffect(() => {
     fetch('http://localhost:8000/trees').then(res => res.json()).then(data => setTreesData(data));
+    fetch('http://localhost:8000/buildings').then(res => res.json()).then(data => setBuildingsData(data));
     loadCommunitySpots();
     fetch('https://api.open-meteo.com/v1/forecast?latitude=38.5449&longitude=-121.7405&current=temperature_2m,relative_humidity_2m&temperature_unit=fahrenheit').then(res => res.json()).then(data => setWeather(data.current));
     updateSunPosition();
@@ -160,27 +165,79 @@ function App() {
   };
 
   const layers = [];
-  const activeFeature = routeData?.features?.find(f => f.properties.type === activeRoute);
-  if (activeFeature && (uiState === 'preview' || uiState === 'nav')) {
-    layers.push(new GeoJsonLayer({
-      id: 'route-layer',
-      data: activeFeature,
-      lineWidthMinPixels: 6,
-      getLineColor: activeRoute === 'coolest' ? [77, 208, 225, 255] : [255, 183, 77, 255],
-      getLineWidth: 14,
-    }));
+  
+  if (routeData?.features && (uiState === 'preview' || uiState === 'nav')) {
+    // Render all routes in preview mode
+    routeData.features.forEach(feature => {
+      const isSelected = activeRoute === feature.properties.type;
+      const isNav = uiState === 'nav';
+      
+      if (isNav && !isSelected) return;
+
+      layers.push(new GeoJsonLayer({
+        id: `route-layer-${feature.properties.type}`,
+        data: feature,
+        lineWidthMinPixels: isSelected ? 8 : 4,
+        getLineColor: feature.properties.type === 'coolest' 
+          ? [77, 208, 225, isSelected ? 255 : 150] 
+          : [255, 183, 77, isSelected ? 255 : 150],
+        getLineWidth: isSelected ? 18 : 10,
+        pickable: true,
+        updateTriggers: {
+          getLineColor: [activeRoute],
+          getLineWidth: [activeRoute]
+        }
+      }));
+    });
   }
+  
   if (treesData?.features) {
+    // Tree Trunks
     layers.push(new ColumnLayer({
-      id: 'tree-layer-3d',
+      id: 'tree-trunks',
+      data: treesData.features,
+      getPosition: d => d.geometry.coordinates,
+      getFillColor: [80, 50, 20, 255],
+      radius: 0.5,
+      extruded: true,
+      getElevation: 2,
+      pickable: false
+    }));
+
+    // Tree Canopies - using a slightly wider and taller column for a "puffy" look
+    layers.push(new ColumnLayer({
+      id: 'tree-canopies',
       data: treesData.features,
       getPosition: d => d.geometry.coordinates,
       getFillColor: d => [...getTreeColor(d.properties.common), 220],
-      radius: 8,
-      diskResolution: 12,
+      radius: 4,
+      diskResolution: 20,
       extruded: true,
-      getElevation: d => d.properties.height_m || 10,
+      getElevation: d => d.properties.height_m || 8,
       pickable: true
+    }));
+  }
+
+  if (buildingsData?.features) {
+    layers.push(new GeoJsonLayer({
+      id: 'buildings-3d',
+      data: buildingsData,
+      extruded: true,
+      getElevation: d => {
+        if (d.properties.height) return d.properties.height;
+        if (d.properties['building:levels']) return parseInt(d.properties['building:levels']) * 4;
+        return 12;
+      },
+      getFillColor: [240, 240, 245, 150],
+      getLineColor: [200, 200, 210, 255],
+      lineWidthMinPixels: 1,
+      pickable: true,
+      material: {
+        ambient: 0.2,
+        diffuse: 0.8,
+        shininess: 32,
+        specularColor: [255, 255, 255]
+      }
     }));
   }
   if (communitySpots?.features) {
@@ -191,7 +248,7 @@ function App() {
       iconAtlas: 'https://raw.githubusercontent.com/visgl/deck.gl-data/master/website/icon-atlas.png',
       iconMapping: { marker: {x: 0, y: 0, width: 128, height: 128, anchorY: 128, mask: true} },
       getIcon: d => 'marker',
-      sizeScale: 6,
+      sizeScale: 12,
       getPosition: d => d.geometry.coordinates,
       getColor: d => d.properties.type === 'shade' ? [33, 150, 243] : [255, 193, 7],
     }));
@@ -202,9 +259,9 @@ function App() {
       data: raysData,
       getPath: d => d.path,
       getTimestamps: d => d.timestamps,
-      getColor: [255, 235, 59, 150], 
-      opacity: 0.6,
-      widthMinPixels: 4,
+      getColor: [255, 235, 59, 80], 
+      opacity: 0.3,
+      widthMinPixels: 2,
       trailLength: 2000,
       currentTime: time
     }));
@@ -258,11 +315,13 @@ function App() {
                   </div>
                   <div className="time">{routeData?.features.find(f => f.properties.type === 'coolest')?.properties.time_mins || '-'} min</div>
                   <div className="subtext">{sunPosition.altitude > 0 ? "Includes AC Hallways & Shade" : "Optimal night path"}</div>
+                  {routeData?.uv_index > 0 && <div className="uv-info">UV Index: {routeData.uv_index}</div>}
                 </div>
                 <div className={`route-card ${activeRoute === 'fastest' ? 'active' : ''}`} onClick={() => setActiveRoute('fastest')}>
                   <div className="header"><span>Fastest Path 🔥</span></div>
                   <div className="time" style={{color: '#e65100'}}>{routeData?.features.find(f => f.properties.type === 'fastest')?.properties.time_mins || '-'} min</div>
                   <div className="subtext">Shortest physical distance</div>
+                  {routeData?.uv_index > 8 && <div className="uv-warning">⚠️ High UV Exposure</div>}
                 </div>
               </div>
               <button className="action-btn" onClick={() => setUiState('nav')}>Start Navigation</button>
@@ -307,7 +366,7 @@ function App() {
 
         <div className="weather-container">
           <div className="weather-card"><span className="label">Conditions</span><span className="value">🌡️ {weather ? `${weather.temperature_2m}°F` : '--'}</span></div>
-          <div className="weather-card"><span className="label">Solar Flux</span><span className="value">☀️ Alt: {sunPosition.altitude}°</span></div>
+          <div className="weather-card"><span className="label">Solar Flux</span><span className="value">☀️ Alt: {sunPosition.altitude}° | UV: {sunPosition.uv_index}</span></div>
         </div>
 
         <DeckGL initialViewState={INITIAL_VIEW_STATE} controller={true} layers={layers} onClick={(info) => { if(isReporting && info.coordinate) { fetch('http://localhost:8000/report_spot', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lat: info.coordinate[1], lon: info.coordinate[0], type: reportType }) }).then(() => { setIsReporting(false); loadCommunitySpots(); }); } else if(info.object && info.layer.id === 'community-spots') setSelectedSpot(info.object); else setSelectedSpot(null); }} getCursor={({isDragging}) => isReporting ? 'crosshair' : (isDragging ? 'grabbing' : 'grab')}>

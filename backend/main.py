@@ -63,7 +63,14 @@ def get_solar_pos(hours_offset=0):
     t = ts.from_datetime(dt)
     astrometric = observer.at(t).observe(sun)
     alt, az, _ = astrometric.apparent().altaz()
-    return alt.degrees, az.degrees
+    
+    # Simple UV calculation based on solar altitude
+    # UV index is max ~11-12 at noon in summer.
+    uv = 0
+    if alt.degrees > 0:
+        uv = max(0, 12 * math.sin(math.radians(alt.degrees)))
+    
+    return alt.degrees, az.degrees, round(uv, 1)
 
 def get_shadow_offset(height, solar_alt, solar_az):
     if solar_alt <= 0: return 0, 0
@@ -82,7 +89,7 @@ def get_weighted_graph(hours_offset=0):
         return graph_cache[offset_key]
     
     print(f"Calculating dynamic weights for offset {offset_key}...")
-    alt, az = get_solar_pos(hours_offset)
+    alt, az, uv = get_solar_pos(hours_offset)
     is_night = alt <= 0
     
     G_copy = G.copy()
@@ -209,13 +216,14 @@ def get_route(start_lat: float, start_lon: float, end_lat: float, end_lon: float
     return {
         "type": "FeatureCollection",
         "features": [f for f in [fastest_feature, coolest_feature] if f],
-        "sunlight_saved": max(0, sunlight_saved)
+        "sunlight_saved": max(0, sunlight_saved),
+        "uv_index": uv
     }
 
 @app.get("/sun_position")
 def get_sun_position(hours_offset: float = 0):
-    alt, az = get_solar_pos(hours_offset)
-    return {"altitude": round(alt, 1), "azimuth": round(az, 1)}
+    alt, az, uv = get_solar_pos(hours_offset)
+    return {"altitude": round(alt, 1), "azimuth": round(az, 1), "uv_index": uv}
 
 @app.get("/trees")
 def get_trees():
@@ -227,6 +235,13 @@ def get_trees():
 def get_community_spots():
     try:
         with open(os.path.join(BASE_DIR, "community_spots.json"), "r") as f: return json.load(f)
+    except: return {"type": "FeatureCollection", "features": []}
+
+@app.get("/buildings")
+def get_buildings():
+    try:
+        # Buildings can be large, so we might want to simplify or limit in production
+        with open(os.path.join(BASE_DIR, "buildings.geojson"), "r") as f: return json.load(f)
     except: return {"type": "FeatureCollection", "features": []}
 
 @app.get("/pois")
