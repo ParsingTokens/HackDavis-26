@@ -1,2 +1,14 @@
 .env
 .env.local
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+data/
+*.bsp
+node_modules/
+.next/
