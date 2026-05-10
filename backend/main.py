@@ -42,8 +42,10 @@ _graph_cache = {}
 _weather_cache = {}
 _weather_cache_time = 0
 
+buildings_df = None
+
 def load_data():
-    global G, trees_df, tree_sindex, building_sindex
+    global G, trees_df, tree_sindex, building_sindex, buildings_df
     try:
         with open(os.path.join(BASE_DIR, "davis_graph.pkl"), "rb") as f:
             G = pickle.load(f)
@@ -54,6 +56,7 @@ def load_data():
         bp = os.path.join(BASE_DIR, "buildings_slim.geojson")
         if os.path.exists(bp):
             bdf = gpd.read_file(bp)
+            buildings_df = bdf
             building_sindex = STRtree(bdf.geometry.values)
         _precompute()
     except Exception as e:
