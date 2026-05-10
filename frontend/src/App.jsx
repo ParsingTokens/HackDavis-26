@@ -1,16 +1,16 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import DeckGL from '@deck.gl/react';
 import Map from 'react-map-gl/maplibre';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { GeoJsonLayer, ColumnLayer, IconLayer } from '@deck.gl/layers';
+import { GeoJsonLayer, ColumnLayer } from '@deck.gl/layers';
 import { TripsLayer } from '@deck.gl/geo-layers';
 import { WebMercatorViewport } from '@deck.gl/core';
 
 const INITIAL_VIEW_STATE = {
   longitude: -121.7495,
   latitude: 38.5397,
-  zoom: 16.2,
+  zoom: 16,
   pitch: 45,
   bearing: 0,
   transitionDuration: 1000
@@ -25,8 +25,6 @@ const TREE_COLORS = {
   'Oak': [34, 100, 34],
   'Pine': [20, 80, 20],
   'Maple': [180, 160, 40],
-  'Cedar': [60, 90, 50],
-  'Palm': [120, 200, 100],
   'default': [80, 160, 80]
 };
 
@@ -38,62 +36,44 @@ const getTreeColor = (name) => {
   return TREE_COLORS.default;
 };
 
-const generateSquigglyRays = (sunAzimuth, sunAlt) => {
+const generateSunRays = (az, alt) => {
+  if (alt <= 0) return [];
   const rays = [];
-  const rayCount = 500; 
-  if (sunAlt <= 0) return []; 
-  
-  for (let i = 0; i < rayCount; i++) {
-    const lat = 38.51 + Math.random() * 0.08;
-    const lon = -121.79 + Math.random() * 0.09;
+  const count = 450;
+  for (let i = 0; i < count; i++) {
+    const lat = 38.51 + Math.random() * 0.06;
+    const lon = -121.78 + Math.random() * 0.06;
     const path = [];
-    const segments = 12;
-    let currZ = 200 + Math.random() * 150;
-    let currLon = lon;
-    let currLat = lat;
-    
-    const dropRate = 15 * (sunAlt / 90 + 0.6);
-    const driftX = 0.0002 * Math.sin(sunAzimuth * Math.PI / 180);
-    const driftY = 0.0002 * Math.cos(sunAzimuth * Math.PI / 180);
-
-    for (let j = 0; j < segments; j++) {
-      path.push([currLon, currLat, currZ]);
-      currZ -= dropRate;
-      currLon += driftX + (Math.random() - 0.5) * 0.0001;
-      currLat += driftY + (Math.random() - 0.5) * 0.0001;
+    let currZ = 220 + Math.random() * 180;
+    const drop = 22 * (alt / 90 + 0.5);
+    const dx = 0.00016 * Math.sin(az * Math.PI / 180);
+    const dy = 0.00016 * Math.cos(az * Math.PI / 180);
+    for (let j = 0; j < 14; j++) {
+      path.push([lon + dx*j, lat + dy*j, currZ - drop*j]);
     }
-    const startOffset = Math.random() * 10000;
-    const timestamps = path.map((_, idx) => startOffset + (idx * 500));
-    rays.push({ path, timestamps });
+    const offset = Math.random() * 15000;
+    rays.push({ path, timestamps: path.map((_, idx) => offset + idx * 500) });
   }
   return rays;
 };
 
-const generateWindRays = (windDir) => {
-  if (windDir === undefined || windDir === null) return [];
+const generateWindRays = (dir) => {
+  if (!dir) return [];
   const rays = [];
-  const rayCount = 250;
-  const angleRad = (windDir - 180) * Math.PI / 180;
-  const dx = 0.0006 * Math.sin(angleRad);
-  const dy = 0.0006 * Math.cos(angleRad);
-
-  for (let i = 0; i < rayCount; i++) {
-    const lat = 38.51 + Math.random() * 0.08;
-    const lon = -121.79 + Math.random() * 0.09;
+  const count = 350;
+  const rad = (dir - 180) * Math.PI / 180;
+  const dx = 0.001 * Math.sin(rad);
+  const dy = 0.001 * Math.cos(rad);
+  for (let i = 0; i < count; i++) {
+    const lat = 38.50 + Math.random() * 0.08;
+    const lon = -121.79 + Math.random() * 0.08;
     const path = [];
-    const segments = 10;
-    let currLon = lon;
-    let currLat = lat;
-    let currZ = 10 + Math.random() * 80;
-
-    for (let j = 0; j < segments; j++) {
-      path.push([currLon, currLat, currZ]);
-      currLon += dx;
-      currLat += dy;
+    let z = 5 + Math.random() * 70;
+    for (let j = 0; j < 12; j++) {
+      path.push([lon + dx*j, lat + dy*j, z]);
     }
-    const startOffset = Math.random() * 6000;
-    const timestamps = path.map((_, idx) => startOffset + (idx * 300));
-    rays.push({ path, timestamps });
+    const offset = Math.random() * 10000;
+    rays.push({ path, timestamps: path.map((_, idx) => offset + idx * 400) });
   }
   return rays;
 };
@@ -104,43 +84,40 @@ function SearchInput({ placeholder, value, onChange, onSelect, isDeparture = fal
   const [showDropdown, setShowDropdown] = useState(false);
   
   useEffect(() => {
-    fetch('http://localhost:8000/pois').then(res => res.json()).then(data => setPois(Array.isArray(data) ? data : [])).catch(e => setPois([]));
+    fetch('http://localhost:8000/pois').then(res => res.json()).then(data => setPois(Array.isArray(data) ? data : [])).catch(() => setPois([]));
   }, []);
 
-  const handleCurrentLocation = () => {
+  const handleLoc = () => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition((pos) => {
         const { latitude, longitude } = pos.coords;
+        onChange("Current Location");
         onSelect(latitude, longitude);
-        onChange("My Current Location");
-      }, (err) => {
-        alert("Location access denied. Please enter manually.");
-      }, { enableHighAccuracy: true, timeout: 5000 });
+      }, (err) => console.error(err), { enableHighAccuracy: true, timeout: 10000 });
     }
   };
 
   useEffect(() => {
-    if (value.length > 1 && showDropdown && value !== "My Current Location") {
+    if (value.length > 1 && showDropdown && value !== "Current Location") {
       const localMatches = pois.filter(p => p.name.toLowerCase().includes(value.toLowerCase()));
-      const delayDebounceFn = setTimeout(() => {
-        fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${value}, Davis, CA`)
+      const delay = setTimeout(() => {
+        // Optimized query to prioritize UC Davis locations
+        fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${value}, UC Davis, Davis, California`)
           .then(res => res.json())
           .then(data => {
-            const apiResults = data.map(r => ({ name: r.display_name.split(',')[0], lat: parseFloat(r.lat), lon: parseFloat(r.lon) }));
-            setResults([...localMatches, ...apiResults].slice(0, 5));
+            const apiRes = data.map(r => ({ name: r.display_name.split(',')[0], lat: parseFloat(r.lat), lon: parseFloat(r.lon) }));
+            setResults([...localMatches, ...apiRes].slice(0, 8));
           })
-          .catch(e => setResults(localMatches));
-      }, 500);
-      return () => clearTimeout(delayDebounceFn);
-    } else if (showDropdown) {
-      setResults(pois.slice(0, 5));
+          .catch(() => setResults(localMatches));
+      }, 400);
+      return () => clearTimeout(delay);
     }
   }, [value, showDropdown, pois]);
 
   return (
     <div className="search-input-wrapper">
-      <input type="text" placeholder={placeholder} value={value} onFocus={() => setShowDropdown(true)} onBlur={() => setTimeout(() => setShowDropdown(false), 200)} onChange={(e) => { onChange(e.target.value); if (!showDropdown) setShowDropdown(true); }} />
-      {isDeparture && <button className="current-loc-btn" onClick={handleCurrentLocation}>Locate</button>}
+      <input type="text" placeholder={placeholder} value={value} onFocus={() => setShowDropdown(true)} onBlur={() => setTimeout(() => setShowDropdown(false), 200)} onChange={(e) => { onChange(e.target.value); setShowDropdown(true); }} />
+      {isDeparture && <button className="current-loc-btn" onClick={handleLoc}>Nearby</button>}
       {showDropdown && results.length > 0 && (
         <div className="autocomplete-dropdown">
           {results.map((r, i) => (
@@ -155,8 +132,8 @@ function SearchInput({ placeholder, value, onChange, onSelect, isDeparture = fal
 function App() {
   const [viewState, setViewState] = useState(INITIAL_VIEW_STATE);
   const [uiState, setUiState] = useState('search');
-  const [theme, setTheme] = useState('dark');
   const [timeOffset, setTimeOffset] = useState(0);
+  const [theme, setTheme] = useState('dark');
   
   const [startQuery, setStartQuery] = useState('');
   const [startCoords, setStartCoords] = useState(null);
@@ -170,231 +147,181 @@ function App() {
   
   const [treesData, setTreesData] = useState(null);
   const [buildingsData, setBuildingsData] = useState(null);
-  const [communitySpots, setCommunitySpots] = useState(null);
-  const [weather, setWeather] = useState({ temp: '--', wind_speed: '--', wind_dir: 180 });
-  const [sunPosition, setSunPosition] = useState({ altitude: -20, azimuth: 0, uv_index: 0 });
-  const [raysData, setRaysData] = useState([]);
-  const [windRays, setWindRays] = useState([]);
+  const [weather, setWeather] = useState(null);
+  const [sunPos, setSunPos] = useState({ altitude: -20, azimuth: 0, uv: 0 });
   const [time, setTime] = useState(0);
-  const [isReporting, setIsReporting] = useState(false);
-  const [showThankYou, setShowThankYou] = useState(false);
+
+  const searchTimeoutRef = useRef(null);
 
   useEffect(() => {
     fetch('http://localhost:8000/trees').then(res => res.json()).then(data => setTreesData(data));
     fetch('http://localhost:8000/buildings').then(res => res.json()).then(data => setBuildingsData(data));
-    loadCommunitySpots();
-    syncEnvironment(0);
-    const animate = () => { setTime(t => (t + 15) % 10000); requestAnimationFrame(animate); };
+    const animate = () => { setTime(t => (t + 20) % 20000); requestAnimationFrame(animate); };
     const reqId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(reqId);
   }, []);
 
-  const syncEnvironment = (offset) => {
-    fetch(`http://localhost:8000/sun_position?hours_offset=${offset}`)
-      .then(res => res.json())
-      .then(data => {
-        setSunPosition(data);
-        setTheme(data.altitude > 0 ? 'light' : 'dark');
-        setRaysData(generateSquigglyRays(data.azimuth, data.altitude));
-      });
-    
-    fetch(`http://localhost:8000/weather?hours_offset=${offset}`)
-      .then(res => res.json())
-      .then(data => {
-        setWeather(data);
-        setWindRays(generateWindRays(data.wind_dir));
-      });
-  };
-
-  useEffect(() => {
-    syncEnvironment(timeOffset);
-    if (startCoords && endCoords) {
-      handleSearch();
-    }
-  }, [timeOffset, startCoords, endCoords]);
-
-  const getClockTime = (offset) => {
-    const d = new Date();
-    d.setHours(d.getHours() + offset);
-    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  };
-
-  const loadCommunitySpots = () => {
-    fetch('http://localhost:8000/community_spots').then(res => res.json()).then(data => setCommunitySpots(data));
-  };
-
-  const fitRouteBounds = (features) => {
-    if (!features || features.length === 0) return;
-    const allCoords = features.flatMap(f => f.geometry.coordinates);
-    const minLon = Math.min(...allCoords.map(c => c[0]));
-    const maxLon = Math.max(...allCoords.map(c => c[0]));
-    const minLat = Math.min(...allCoords.map(c => c[1]));
-    const maxLat = Math.max(...allCoords.map(c => c[1]));
-
-    const viewport = new WebMercatorViewport(viewState);
-    const { longitude, latitude, zoom } = viewport.fitBounds(
-      [[minLon, minLat], [maxLon, maxLat]],
-      { padding: 100 }
-    );
-    setViewState({ ...viewState, longitude, latitude, zoom: zoom - 0.2, transitionDuration: 1000 });
-  };
-
   const handleSearch = () => {
     if (!startCoords || !endCoords) return;
     setRouteLoading(true);
+    setRouteError(null);
     fetch(`http://localhost:8000/route?start_lat=${startCoords.lat}&start_lon=${startCoords.lon}&end_lat=${endCoords.lat}&end_lon=${endCoords.lon}&time_offset=${timeOffset}`)
       .then(res => res.json())
       .then(data => {
         setRouteLoading(false);
         if (data.error) setRouteError(data.error);
-        else if (data.features) {
+        else {
           setRouteData(data);
           setActiveRoute('coolest');
           setWeather(data.weather);
-          setWindRays(generateWindRays(data.weather.wind_dir));
-          if (uiState === 'search') {
+          if (uiState === 'search' || uiState === 'preview') {
             setUiState('preview');
-            fitRouteBounds(data.features);
+            const coords = data.features.flatMap(f => f.geometry.coordinates);
+            if (coords.length > 0) {
+              const lons = coords.map(c => c[0]), lats = coords.map(c => c[1]);
+              const vp = new WebMercatorViewport(viewState);
+              const { longitude, latitude, zoom } = vp.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], { padding: 80 });
+              setViewState({ ...viewState, longitude, latitude, zoom: zoom - 0.1 });
+            }
           }
         }
       })
-      .catch(err => {
-        setRouteLoading(false);
-        setRouteError(`Connection lost. Backend unreachable.`);
+      .catch((err) => { 
+        setRouteLoading(false); 
+        setRouteError("Connection error. Ensure backend is running."); 
       });
   };
 
+  useEffect(() => {
+    // Update environment when slider moves
+    fetch(`http://localhost:8000/sun_position?hours_offset=${timeOffset}`).then(res => res.json()).then(data => {
+      setSunPos({ altitude: data.altitude, azimuth: data.azimuth, uv: data.uv_index });
+      setTheme(data.altitude > 0 ? 'light' : 'dark');
+    });
+    fetch(`http://localhost:8000/weather?hours_offset=${timeOffset}`).then(res => res.json()).then(data => setWeather(data));
+    
+    // Auto-recalculate if locations are already set
+    if (startCoords && endCoords) {
+      if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+      searchTimeoutRef.current = setTimeout(() => {
+        handleSearch();
+      }, 600);
+    }
+  }, [timeOffset]);
+
+  // Immediate recalculation on new coordinate selection
+  useEffect(() => {
+    if (startCoords && endCoords) handleSearch();
+  }, [startCoords, endCoords]);
+
+  const sunRays = useMemo(() => generateSunRays(sunPos.azimuth, sunPos.altitude), [sunPos]);
+  const windRays = useMemo(() => generateWindRays(weather?.wind_dir), [weather]);
+
   const layers = [
     buildingsData && new GeoJsonLayer({
-      id: 'buildings-3d',
+      id: 'buildings',
       data: buildingsData,
       extruded: true,
       getElevation: d => d.properties?.height || 10,
-      getFillColor: theme === 'dark' ? [45, 55, 72, 220] : [248, 246, 238, 240], 
-      getLineColor: [100, 116, 139, theme === 'dark' ? 50 : 100],
-      material: { 
-        ambient: theme === 'dark' ? 0.35 : 0.65, 
-        diffuse: theme === 'dark' ? 0.65 : 0.35, 
-        shininess: 25 
-      }
+      // Darken buildings in light mode for better contrast
+      getFillColor: theme === 'dark' ? [45, 55, 72, 220] : [100, 116, 139, 200], 
+      getLineColor: [50, 60, 80, 80],
+      material: { ambient: 0.6, diffuse: 0.4, shininess: 30 }
     }),
     treesData && [
       new ColumnLayer({
-        id: 'tree-trunks',
-        data: treesData.features,
-        getPosition: d => d.geometry.coordinates,
-        getFillColor: [88, 64, 44],
-        radius: 0.2,
-        extruded: true,
-        getElevation: 4
+        id: 'trunks', data: treesData.features, getPosition: d => d.geometry.coordinates,
+        getFillColor: [88, 64, 44], radius: 0.2, extruded: true, getElevation: 4
       }),
       new ColumnLayer({
-        id: 'tree-canopy-puffy',
-        data: treesData.features,
-        getPosition: d => d.geometry.coordinates,
+        id: 'canopy', data: treesData.features, getPosition: d => d.geometry.coordinates,
         getFillColor: d => [...getTreeColor(d.properties.common), 150],
-        radius: 4.8, 
-        extruded: true,
-        getElevation: d => (d.properties.height_m || 8) * 0.7,
-        offset: [0, 0, 4]
+        radius: 4.5, extruded: true, getElevation: d => (d.properties.height_m || 8) * 0.7, offset: [0, 0, 4]
       })
     ],
-    routeData && routeData.features.map(feature => {
-      const isSelected = activeRoute === feature.properties.type;
-      if (uiState === 'nav' && !isSelected) return null;
+    routeData && routeData.features.map(f => {
+      const active = activeRoute === f.properties.type;
+      if (uiState === 'nav' && !active) return null;
       return new GeoJsonLayer({
-        id: `route-layer-${feature.properties.type}`,
-        data: feature,
-        lineWidthUnits: 'pixels',
-        getLineColor: feature.properties.type === 'coolest' ? [14, 165, 233, isSelected ? 255 : 120] : [245, 158, 11, isSelected ? 255 : 120],
-        getLineWidth: isSelected ? 12 : 6,
-        parameters: { depthTest: false }
+        id: `route-${f.properties.type}`, data: f, lineWidthUnits: 'pixels',
+        getLineColor: f.properties.type === 'coolest' ? [14, 165, 233, active ? 255 : 120] : [245, 158, 11, active ? 255 : 120],
+        getLineWidth: active ? 10 : 5, parameters: { depthTest: false }
       });
     }),
-    sunPosition.altitude > 0 && new TripsLayer({
-      id: 'sun-rays',
-      data: raysData,
-      getPath: d => d.path,
-      getTimestamps: d => d.timestamps,
-      getColor: [255, 255, 255, 40],
-      widthMinPixels: 1.0,
-      trailLength: 2000,
-      currentTime: time,
-      parameters: { depthTest: false }
+    sunPos.altitude > 0 && new TripsLayer({
+      id: 'sun-rays', data: sunRays, getPath: d => d.path, getTimestamps: d => d.timestamps,
+      getColor: [255, 255, 255, 50], widthMinPixels: 2.5, trailLength: 4000, currentTime: time, parameters: { depthTest: false }
     }),
     new TripsLayer({
-      id: 'wind-rays',
-      data: windRays,
-      getPath: d => d.path,
-      getTimestamps: d => d.timestamps,
-      getColor: [255, 255, 255, 80],
-      widthMinPixels: 2.0,
-      trailLength: 1500,
-      currentTime: time,
-      parameters: { depthTest: false }
+      id: 'wind-rays', data: windRays, getPath: d => d.path, getTimestamps: d => d.timestamps,
+      // More visible wind in day mode
+      getColor: theme === 'light' ? [255, 255, 255, 120] : [255, 255, 255, 70], 
+      widthMinPixels: 2.5, trailLength: 2000, currentTime: time, parameters: { depthTest: false }
     })
   ].flat().filter(Boolean);
 
-  const resetAll = () => {
+  const getClock = (off) => {
+    const d = new Date(); d.setHours(d.getHours() + off);
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  };
+
+  const resetSearch = () => {
     setUiState('search');
     setRouteData(null);
+    setRouteLoading(false);
+    setRouteError(null);
     setStartQuery('');
     setStartCoords(null);
     setEndQuery('');
     setEndCoords(null);
     setTimeOffset(0);
-    syncEnvironment(0);
   };
 
   return (
     <>
       <div className="sidebar">
-        <div className="sidebar-header">
-          <h1>Canopy</h1>
-        </div>
-
+        <div className="sidebar-header"><h1>Canopy</h1></div>
         <div className="sidebar-content">
           <div className="ui-section">
             <span className="section-title">Schedule</span>
             <div className="time-controls">
               <label style={{fontSize: '0.8rem', fontWeight: 700}}>
-                {sunPosition.altitude > 0 ? "☀️ Day View" : "🌙 Night View"}
-                <span style={{float: 'right', color: 'var(--primary-accent)'}}>{getClockTime(timeOffset)}</span>
+                {sunPos.altitude > 0 ? "☀️ Daytime" : "🌙 Nighttime"}
+                <span style={{float: 'right', color: 'var(--primary-accent)'}}>{getClock(timeOffset)}</span>
               </label>
               <input type="range" min="0" max="24" step="0.5" value={timeOffset} onChange={(e) => setTimeOffset(parseFloat(e.target.value))} className="time-slider" />
             </div>
           </div>
-
           <div className="ui-section">
             <span className="section-title">Navigation</span>
             <div className="input-group">
-              <SearchInput placeholder="Departure" value={startQuery} onChange={setStartQuery} onSelect={(lat, lon) => setStartCoords({lat, lon})} isDeparture={true} />
-              <SearchInput placeholder="Destination" value={endQuery} onChange={setEndQuery} onSelect={(lat, lon) => setEndCoords({lat, lon})} />
+              <SearchInput placeholder="From Hall/Building..." value={startQuery} onChange={setStartQuery} onSelect={(lat, lon) => setStartCoords({lat, lon})} isDeparture={true} />
+              <SearchInput placeholder="To Hall/Building..." value={endQuery} onChange={setEndQuery} onSelect={(lat, lon) => setEndCoords({lat, lon})} />
             </div>
-            {uiState === 'search' && (
-              <button className="action-btn" onClick={handleSearch}>Go</button>
+            {(uiState === 'search' || uiState === 'preview') && (
+              <button className="action-btn" onClick={handleSearch} disabled={routeLoading}>
+                {routeLoading ? "Recalculating..." : "Go"}
+              </button>
             )}
           </div>
-
           {uiState === 'preview' && (
             <div className="ui-section">
-              <span className="section-title">Routes Found</span>
-              {routeLoading ? <div className="thank-you-msg">Recalculating...</div> : routeError ? <div style={{color:'red', fontSize:'0.8rem'}}>{routeError}</div> : (
+              <span className="section-title">Routes</span>
+              {routeError ? <div style={{color:'red', fontSize:'0.8rem'}}>{routeError}</div> : (
                 routeData?.features.map(f => (
                   <div key={f.properties.type} className={`route-card ${activeRoute === f.properties.type ? 'active' : ''}`} onClick={() => setActiveRoute(f.properties.type)}>
                     <div className="header">
                       <span className="type">{f.properties.type === 'coolest' ? "Cooler" : "Efficient"}</span>
-                      {f.properties.type === 'coolest' && <span className="badge">Dijkstra-Optimized</span>}
+                      {f.properties.type === 'coolest' && <span className="badge">Best Path</span>}
                     </div>
                     <div className="time" style={{color: f.properties.type === 'coolest' ? 'var(--cool-blue)' : 'var(--warm-orange)'}}>{f.properties.time_mins} min</div>
                   </div>
                 ))
               )}
-              {!routeLoading && routeData && <button className="action-btn" onClick={() => setUiState('nav')}>Navigate</button>}
-              <button className="action-btn secondary" onClick={resetAll}>Reset All</button>
+              {!routeLoading && routeData && <button className="action-btn" onClick={() => setUiState('nav')}>Start Walking</button>}
+              <button className="action-btn secondary" onClick={resetSearch}>Reset</button>
             </div>
           )}
-
           {uiState === 'nav' && (
             <div className="ui-section">
               <span className="section-title">Directions</span>
@@ -403,52 +330,18 @@ function App() {
                   <div key={idx} className="instruction-item">{inst}</div>
                 ))}
               </div>
-              <button className="action-btn secondary" onClick={() => setUiState('search')}>End Path</button>
+              <button className="action-btn secondary" onClick={() => setUiState('search')}>Exit Navigation</button>
             </div>
           )}
-
-          <div className="community-section">
-            {showThankYou ? (
-              <div className="thank-you-msg">Contribution recorded. Thank you!</div>
-            ) : isReporting ? (
-              <button className="suggest-btn" style={{color: 'var(--danger)'}} onClick={() => setIsReporting(false)}>Cancel</button>
-            ) : (
-              <button className="suggest-btn" onClick={() => setIsReporting(true)}>Suggest Shade Spot</button>
-            )}
-          </div>
         </div>
       </div>
-
       <div className="map-container">
         <div className="weather-container">
-          <div className="weather-card">
-            <span className="label">Forecasted Temperature</span>
-            <span className="value">{weather?.temp && weather.temp !== '--' ? `${Math.round(weather.temp)}°F` : '--'}</span>
-          </div>
-          <div className="weather-card">
-            <span className="label">Forecasted Wind</span>
-            <span className="value">{weather?.wind_speed && weather.wind_speed !== '--' ? `${weather.wind_speed} km/h` : '--'}</span>
-          </div>
+          <div className="weather-card"><span className="label">Forecast Temp</span><span className="value">{weather?.temp ? `${Math.round(weather.temp)}°F` : '--'}</span></div>
+          <div className="weather-card"><span className="label">Forecast Wind</span><span className="value">{weather?.wind_speed ? `${weather.wind_speed} km/h` : '--'}</span></div>
         </div>
-
-        <DeckGL 
-          viewState={viewState}
-          onViewStateChange={({viewState}) => setViewState(viewState)}
-          controller={true} 
-          layers={layers} 
-          getCursor={({isDragging}) => isReporting ? 'crosshair' : (isDragging ? 'grabbing' : 'grab')}
-          onClick={(info, event) => { 
-            if (event.target.closest('.sidebar') || event.target.closest('.weather-container')) return;
-            if(isReporting && info.coordinate) { 
-              fetch('http://localhost:8000/report_spot', { 
-                method: 'POST', 
-                headers: { 'Content-Type': 'application/json' }, 
-                body: JSON.stringify({ lat: info.coordinate[1], lon: info.coordinate[0], type: 'shade' }) 
-              }).then(() => { 
-                setIsReporting(false); setShowThankYou(true); loadCommunitySpots(); setTimeout(() => setShowThankYou(false), 5000);
-              }); 
-            } else if(info.object && info.layer.id === 'community-spots') setSelectedSpot(info.object); 
-          }}
+        <DeckGL viewState={viewState} onViewStateChange={({viewState}) => setViewState(viewState)} controller={true} layers={layers} 
+          getCursor={({isDragging}) => isDragging ? 'grabbing' : 'grab'}
         >
           <Map mapStyle={THEMES[theme]} mapLib={maplibregl} />
         </DeckGL>
@@ -456,5 +349,4 @@ function App() {
     </>
   );
 }
-
 export default App;
