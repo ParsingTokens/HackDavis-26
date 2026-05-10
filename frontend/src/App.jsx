@@ -38,29 +38,23 @@ const getTreeColor = (name) => {
   return TREE_COLORS.default;
 };
 
-const formatTime = (offset) => {
-  const dt = new Date();
-  dt.setMinutes(dt.getMinutes() + (offset * 60));
-  return dt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-};
-
 const generateSquigglyRays = (sunAzimuth, sunAlt) => {
   const rays = [];
-  const rayCount = 400; 
+  const rayCount = 500; 
   if (sunAlt <= 0) return []; 
   
   for (let i = 0; i < rayCount; i++) {
-    const lat = 38.52 + Math.random() * 0.06;
-    const lon = -121.78 + Math.random() * 0.07;
+    const lat = 38.51 + Math.random() * 0.08;
+    const lon = -121.79 + Math.random() * 0.09;
     const path = [];
     const segments = 12;
     let currZ = 200 + Math.random() * 150;
     let currLon = lon;
     let currLat = lat;
     
-    const dropRate = 20 * (sunAlt / 90 + 0.5);
-    const driftX = 0.00015 * Math.sin(sunAzimuth * Math.PI / 180);
-    const driftY = 0.00015 * Math.cos(sunAzimuth * Math.PI / 180);
+    const dropRate = 15 * (sunAlt / 90 + 0.6);
+    const driftX = 0.0002 * Math.sin(sunAzimuth * Math.PI / 180);
+    const driftY = 0.0002 * Math.cos(sunAzimuth * Math.PI / 180);
 
     for (let j = 0; j < segments; j++) {
       path.push([currLon, currLat, currZ]);
@@ -68,7 +62,7 @@ const generateSquigglyRays = (sunAzimuth, sunAlt) => {
       currLon += driftX + (Math.random() - 0.5) * 0.0001;
       currLat += driftY + (Math.random() - 0.5) * 0.0001;
     }
-    const startOffset = Math.random() * 8000;
+    const startOffset = Math.random() * 10000;
     const timestamps = path.map((_, idx) => startOffset + (idx * 500));
     rays.push({ path, timestamps });
   }
@@ -76,11 +70,12 @@ const generateSquigglyRays = (sunAzimuth, sunAlt) => {
 };
 
 const generateWindRays = (windDir) => {
+  if (windDir === undefined || windDir === null) return [];
   const rays = [];
-  const rayCount = 200;
+  const rayCount = 250;
   const angleRad = (windDir - 180) * Math.PI / 180;
-  const dx = 0.0005 * Math.sin(angleRad);
-  const dy = 0.0005 * Math.cos(angleRad);
+  const dx = 0.0006 * Math.sin(angleRad);
+  const dy = 0.0006 * Math.cos(angleRad);
 
   for (let i = 0; i < rayCount; i++) {
     const lat = 38.51 + Math.random() * 0.08;
@@ -89,14 +84,14 @@ const generateWindRays = (windDir) => {
     const segments = 10;
     let currLon = lon;
     let currLat = lat;
-    let currZ = 5 + Math.random() * 40;
+    let currZ = 10 + Math.random() * 80;
 
     for (let j = 0; j < segments; j++) {
       path.push([currLon, currLat, currZ]);
       currLon += dx;
       currLat += dy;
     }
-    const startOffset = Math.random() * 5000;
+    const startOffset = Math.random() * 6000;
     const timestamps = path.map((_, idx) => startOffset + (idx * 300));
     rays.push({ path, timestamps });
   }
@@ -116,14 +111,16 @@ function SearchInput({ placeholder, value, onChange, onSelect, isDeparture = fal
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition((pos) => {
         const { latitude, longitude } = pos.coords;
-        onChange("Current Location");
         onSelect(latitude, longitude);
-      });
+        onChange("My Current Location");
+      }, (err) => {
+        alert("Location access denied. Please enter manually.");
+      }, { enableHighAccuracy: true, timeout: 5000 });
     }
   };
 
   useEffect(() => {
-    if (value.length > 1 && showDropdown && value !== "Current Location") {
+    if (value.length > 1 && showDropdown && value !== "My Current Location") {
       const localMatches = pois.filter(p => p.name.toLowerCase().includes(value.toLowerCase()));
       const delayDebounceFn = setTimeout(() => {
         fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${value}, Davis, CA`)
@@ -143,7 +140,7 @@ function SearchInput({ placeholder, value, onChange, onSelect, isDeparture = fal
   return (
     <div className="search-input-wrapper">
       <input type="text" placeholder={placeholder} value={value} onFocus={() => setShowDropdown(true)} onBlur={() => setTimeout(() => setShowDropdown(false), 200)} onChange={(e) => { onChange(e.target.value); if (!showDropdown) setShowDropdown(true); }} />
-      {isDeparture && <button className="current-loc-btn" onClick={handleCurrentLocation}>Nearby</button>}
+      {isDeparture && <button className="current-loc-btn" onClick={handleCurrentLocation}>Locate</button>}
       {showDropdown && results.length > 0 && (
         <div className="autocomplete-dropdown">
           {results.map((r, i) => (
@@ -174,7 +171,7 @@ function App() {
   const [treesData, setTreesData] = useState(null);
   const [buildingsData, setBuildingsData] = useState(null);
   const [communitySpots, setCommunitySpots] = useState(null);
-  const [weather, setWeather] = useState(null);
+  const [weather, setWeather] = useState({ temp: '--', wind_speed: '--', wind_dir: 180 });
   const [sunPosition, setSunPosition] = useState({ altitude: -20, azimuth: 0, uv_index: 0 });
   const [raysData, setRaysData] = useState([]);
   const [windRays, setWindRays] = useState([]);
@@ -186,38 +183,41 @@ function App() {
     fetch('http://localhost:8000/trees').then(res => res.json()).then(data => setTreesData(data));
     fetch('http://localhost:8000/buildings').then(res => res.json()).then(data => setBuildingsData(data));
     loadCommunitySpots();
-    const animate = () => { setTime(t => (t + 15) % 8000); requestAnimationFrame(animate); };
+    syncEnvironment(0);
+    const animate = () => { setTime(t => (t + 15) % 10000); requestAnimationFrame(animate); };
     const reqId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(reqId);
   }, []);
 
-  // Update theme and rays when sun position changes
-  useEffect(() => {
-    const isDay = sunPosition.altitude > 0;
-    setTheme(isDay ? 'light' : 'dark');
-    setRaysData(generateSquigglyRays(sunPosition.azimuth, sunPosition.altitude));
-  }, [sunPosition]);
-
-  // Recalculate environment on slider change
-  useEffect(() => {
-    fetch(`http://localhost:8000/sun_position?hours_offset=${timeOffset}`)
-      .then(res => res.json())
-      .then(data => setSunPosition(data));
-    
-    // Fetch forecast for weather card
-    fetch(`http://localhost:8000/route?start_lat=38.54&start_lon=-121.74&end_lat=38.54&end_lon=-121.74&time_offset=${timeOffset}`)
+  const syncEnvironment = (offset) => {
+    fetch(`http://localhost:8000/sun_position?hours_offset=${offset}`)
       .then(res => res.json())
       .then(data => {
-        if (data.weather) {
-          setWeather(data.weather);
-          setWindRays(generateWindRays(data.weather.wind_dir));
-        }
+        setSunPosition(data);
+        setTheme(data.altitude > 0 ? 'light' : 'dark');
+        setRaysData(generateSquigglyRays(data.azimuth, data.altitude));
       });
+    
+    fetch(`http://localhost:8000/weather?hours_offset=${offset}`)
+      .then(res => res.json())
+      .then(data => {
+        setWeather(data);
+        setWindRays(generateWindRays(data.wind_dir));
+      });
+  };
 
+  useEffect(() => {
+    syncEnvironment(timeOffset);
     if (startCoords && endCoords) {
       handleSearch();
     }
-  }, [timeOffset]);
+  }, [timeOffset, startCoords, endCoords]);
+
+  const getClockTime = (offset) => {
+    const d = new Date();
+    d.setHours(d.getHours() + offset);
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  };
 
   const loadCommunitySpots = () => {
     fetch('http://localhost:8000/community_spots').then(res => res.json()).then(data => setCommunitySpots(data));
@@ -234,7 +234,7 @@ function App() {
     const viewport = new WebMercatorViewport(viewState);
     const { longitude, latitude, zoom } = viewport.fitBounds(
       [[minLon, minLat], [maxLon, maxLat]],
-      { padding: 80 }
+      { padding: 100 }
     );
     setViewState({ ...viewState, longitude, latitude, zoom: zoom - 0.2, transitionDuration: 1000 });
   };
@@ -260,7 +260,7 @@ function App() {
       })
       .catch(err => {
         setRouteLoading(false);
-        setRouteError(`Failed to fetch route. Is backend running?`);
+        setRouteError(`Connection lost. Backend unreachable.`);
       });
   };
 
@@ -270,12 +270,12 @@ function App() {
       data: buildingsData,
       extruded: true,
       getElevation: d => d.properties?.height || 10,
-      getFillColor: theme === 'dark' ? [45, 55, 72, 220] : [240, 240, 235, 230],
-      getLineColor: theme === 'dark' ? [100, 116, 139, 40] : [180, 180, 170, 80],
+      getFillColor: theme === 'dark' ? [45, 55, 72, 220] : [248, 246, 238, 240], 
+      getLineColor: [100, 116, 139, theme === 'dark' ? 50 : 100],
       material: { 
-        ambient: theme === 'light' ? 0.6 : 0.4, 
-        diffuse: theme === 'light' ? 0.8 : 0.6, 
-        shininess: 20 
+        ambient: theme === 'dark' ? 0.35 : 0.65, 
+        diffuse: theme === 'dark' ? 0.65 : 0.35, 
+        shininess: 25 
       }
     }),
     treesData && [
@@ -293,15 +293,10 @@ function App() {
         data: treesData.features,
         getPosition: d => d.geometry.coordinates,
         getFillColor: d => [...getTreeColor(d.properties.common), 150],
-        radius: 4.5,
-        diskResolution: 16,
+        radius: 4.8, 
         extruded: true,
         getElevation: d => (d.properties.height_m || 8) * 0.7,
-        offset: [0, 0, 4],
-        material: { 
-            ambient: theme === 'light' ? 0.6 : 0.4, 
-            diffuse: 0.7 
-        }
+        offset: [0, 0, 4]
       })
     ],
     routeData && routeData.features.map(feature => {
@@ -312,7 +307,7 @@ function App() {
         data: feature,
         lineWidthUnits: 'pixels',
         getLineColor: feature.properties.type === 'coolest' ? [14, 165, 233, isSelected ? 255 : 120] : [245, 158, 11, isSelected ? 255 : 120],
-        getLineWidth: isSelected ? 10 : 5,
+        getLineWidth: isSelected ? 12 : 6,
         parameters: { depthTest: false }
       });
     }),
@@ -321,8 +316,8 @@ function App() {
       data: raysData,
       getPath: d => d.path,
       getTimestamps: d => d.timestamps,
-      getColor: [255, 255, 255, 30],
-      widthMinPixels: 0.5,
+      getColor: [255, 255, 255, 40],
+      widthMinPixels: 1.0,
       trailLength: 2000,
       currentTime: time,
       parameters: { depthTest: false }
@@ -332,13 +327,24 @@ function App() {
       data: windRays,
       getPath: d => d.path,
       getTimestamps: d => d.timestamps,
-      getColor: [255, 255, 255, 60],
-      widthMinPixels: 1.5,
+      getColor: [255, 255, 255, 80],
+      widthMinPixels: 2.0,
       trailLength: 1500,
       currentTime: time,
       parameters: { depthTest: false }
     })
   ].flat().filter(Boolean);
+
+  const resetAll = () => {
+    setUiState('search');
+    setRouteData(null);
+    setStartQuery('');
+    setStartCoords(null);
+    setEndQuery('');
+    setEndCoords(null);
+    setTimeOffset(0);
+    syncEnvironment(0);
+  };
 
   return (
     <>
@@ -351,63 +357,61 @@ function App() {
           <div className="ui-section">
             <span className="section-title">Schedule</span>
             <div className="time-controls">
-              <label style={{fontSize: '0.85rem', fontWeight: 800}}>
-                {theme === 'light' ? "☀️ Day" : "🌙 Night"} — {formatTime(timeOffset)}
+              <label style={{fontSize: '0.8rem', fontWeight: 700}}>
+                {sunPosition.altitude > 0 ? "☀️ Day View" : "🌙 Night View"}
+                <span style={{float: 'right', color: 'var(--primary-accent)'}}>{getClockTime(timeOffset)}</span>
               </label>
-              <input type="range" min="0" max="24" step="0.25" value={timeOffset} onChange={(e) => setTimeOffset(parseFloat(e.target.value))} className="time-slider" />
+              <input type="range" min="0" max="24" step="0.5" value={timeOffset} onChange={(e) => setTimeOffset(parseFloat(e.target.value))} className="time-slider" />
             </div>
           </div>
 
           <div className="ui-section">
             <span className="section-title">Navigation</span>
             <div className="input-group">
-              <SearchInput placeholder="From..." value={startQuery} onChange={setStartQuery} onSelect={(lat, lon) => setStartCoords({lat, lon})} isDeparture={true} />
-              <SearchInput placeholder="To..." value={endQuery} onChange={setEndQuery} onSelect={(lat, lon) => setEndCoords({lat, lon})} />
+              <SearchInput placeholder="Departure" value={startQuery} onChange={setStartQuery} onSelect={(lat, lon) => setStartCoords({lat, lon})} isDeparture={true} />
+              <SearchInput placeholder="Destination" value={endQuery} onChange={setEndQuery} onSelect={(lat, lon) => setEndCoords({lat, lon})} />
             </div>
             {uiState === 'search' && (
-              <button className="action-btn" onClick={handleSearch} disabled={!startCoords || !endCoords}>Calculate Route</button>
+              <button className="action-btn" onClick={handleSearch}>Go</button>
             )}
           </div>
 
           {uiState === 'preview' && (
             <div className="ui-section">
-              <span className="section-title">Results</span>
-              {routeLoading ? <div className="thank-you-msg">Optimizing...</div> : routeError ? <div style={{color:'red', fontSize:'0.8rem'}}>{routeError}</div> : (
+              <span className="section-title">Routes Found</span>
+              {routeLoading ? <div className="thank-you-msg">Recalculating...</div> : routeError ? <div style={{color:'red', fontSize:'0.8rem'}}>{routeError}</div> : (
                 routeData?.features.map(f => (
                   <div key={f.properties.type} className={`route-card ${activeRoute === f.properties.type ? 'active' : ''}`} onClick={() => setActiveRoute(f.properties.type)}>
                     <div className="header">
-                      <span className="type">{f.properties.type === 'coolest' ? "Cooler Route" : "Efficient Route"}</span>
-                      {f.properties.type === 'coolest' && <span className="badge">Cooler</span>}
+                      <span className="type">{f.properties.type === 'coolest' ? "Cooler" : "Efficient"}</span>
+                      {f.properties.type === 'coolest' && <span className="badge">Dijkstra-Optimized</span>}
                     </div>
                     <div className="time" style={{color: f.properties.type === 'coolest' ? 'var(--cool-blue)' : 'var(--warm-orange)'}}>{f.properties.time_mins} min</div>
                   </div>
                 ))
               )}
-              {routeData?.recommendation && !routeData.recommendation.is_now && (
-                <div className="recommendation-banner">Optimization Tip: {routeData.recommendation.label} for better protection.</div>
-              )}
-              {!routeLoading && routeData && <button className="action-btn" onClick={() => setUiState('nav')}>Start Walking</button>}
-              <button className="action-btn secondary" onClick={() => { setUiState('search'); setRouteData(null); }}>Reset All</button>
+              {!routeLoading && routeData && <button className="action-btn" onClick={() => setUiState('nav')}>Navigate</button>}
+              <button className="action-btn secondary" onClick={resetAll}>Reset All</button>
             </div>
           )}
 
           {uiState === 'nav' && (
             <div className="ui-section">
-              <span className="section-title">Steps</span>
+              <span className="section-title">Directions</span>
               <div className="instructions-list">
                 {routeData?.features.find(f => f.properties.type === activeRoute)?.properties?.instructions?.map((inst, idx) => (
                   <div key={idx} className="instruction-item">{inst}</div>
                 ))}
               </div>
-              <button className="action-btn secondary" onClick={() => setUiState('search')}>Exit</button>
+              <button className="action-btn secondary" onClick={() => setUiState('search')}>End Path</button>
             </div>
           )}
 
           <div className="community-section">
             {showThankYou ? (
-              <div className="thank-you-msg">Thank you! Your contribution helps the community.</div>
+              <div className="thank-you-msg">Contribution recorded. Thank you!</div>
             ) : isReporting ? (
-              <button className="suggest-btn" style={{color: 'var(--danger)'}} onClick={() => setIsReporting(false)}>Cancel Suggestion</button>
+              <button className="suggest-btn" style={{color: 'var(--danger)'}} onClick={() => setIsReporting(false)}>Cancel</button>
             ) : (
               <button className="suggest-btn" onClick={() => setIsReporting(true)}>Suggest Shade Spot</button>
             )}
@@ -418,12 +422,12 @@ function App() {
       <div className="map-container">
         <div className="weather-container">
           <div className="weather-card">
-            <span className="label">Temp Forecast</span>
-            <span className="value">{weather?.temp ? `${Math.round(weather.temp)}°F` : '--'}</span>
+            <span className="label">Forecasted Temperature</span>
+            <span className="value">{weather?.temp && weather.temp !== '--' ? `${Math.round(weather.temp)}°F` : '--'}</span>
           </div>
           <div className="weather-card">
-            <span className="label">Wind Forecast</span>
-            <span className="value">{weather?.wind_speed ? `${weather.wind_speed} km/h` : '--'}</span>
+            <span className="label">Forecasted Wind</span>
+            <span className="value">{weather?.wind_speed && weather.wind_speed !== '--' ? `${weather.wind_speed} km/h` : '--'}</span>
           </div>
         </div>
 

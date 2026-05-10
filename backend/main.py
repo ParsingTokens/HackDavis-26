@@ -86,27 +86,28 @@ def get_shadow_offset(height, solar_alt, solar_az):
     return dx, dy
 
 def get_weather_data(hours_offset=0):
-    """Fetch forecasted weather including wind for a specific offset."""
+    """Fetch current or forecasted weather including wind."""
     try:
-        # Fetch 24-hour hourly forecast
-        url = f"https://api.open-meteo.com/v1/forecast?latitude={DAVIS_LAT}&longitude={DAVIS_LON}&hourly=temperature_2m,wind_speed_10m,wind_direction_10m&temperature_unit=fahrenheit&forecast_days=2"
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={DAVIS_LAT}&longitude={DAVIS_LON}&current=temperature_2m,wind_speed_10m,wind_direction_10m&hourly=temperature_2m,wind_speed_10m,wind_direction_10m&temperature_unit=fahrenheit&forecast_days=2"
         res = requests.get(url, timeout=5)
         data = res.json()
         
-        # Find index for requested hour
-        target_time = datetime.now(timezone.utc) + timedelta(hours=hours_offset)
-        times = data['hourly']['time']
+        if hours_offset == 0:
+            return data.get('current', {})
         
-        # Simple index matching (API returns hourly)
-        target_idx = min(int(hours_offset), len(times) - 1)
+        # Calculate hourly index
+        now = datetime.now()
+        current_hour = now.hour
+        target_idx = current_hour + int(hours_offset)
         
+        hourly = data.get('hourly', {})
         return {
-            "temperature_2m": data['hourly']['temperature_2m'][target_idx],
-            "wind_speed_10m": data['hourly']['wind_speed_10m'][target_idx],
-            "wind_direction_10m": data['hourly']['wind_direction_10m'][target_idx]
+            "temperature_2m": hourly.get('temperature_2m', [85]*48)[target_idx],
+            "wind_speed_10m": hourly.get('wind_speed_10m', [5]*48)[target_idx],
+            "wind_direction_10m": hourly.get('wind_direction_10m', [180]*48)[target_idx]
         }
     except Exception as e:
-        print(f"Weather error: {e}")
+        print(f"Weather fetch error: {e}")
         return {"temperature_2m": 85, "wind_speed_10m": 5, "wind_direction_10m": 180}
 
 def calculate_convective_cooling(wind_speed):
@@ -119,16 +120,20 @@ def calculate_convective_cooling(wind_speed):
 graph_cache = {}
 
 def get_weighted_graph(hours_offset=0):
-    offset_key = round(hours_offset, 1)
+    """Generates a graph with weights modified by solar exposure and convective cooling."""
+    # We round to 0.25h increments to use cache effectively but keep precision
+    offset_key = round(hours_offset * 4) / 4.0
     if offset_key in graph_cache:
         return graph_cache[offset_key]
     
-    print(f"Calculating dynamic weights for offset {offset_key}...")
-    alt, az, uv = get_solar_pos(hours_offset)
+    print(f"--- Recalculating Graph Weights for offset: {offset_key}h ---")
+    alt, az, uv = get_solar_pos(offset_key)
     is_night = alt <= 0
-    weather = get_weather_data()
+    weather = get_weather_data(offset_key)
     wind_speed = weather.get("wind_speed_10m", 5)
     wind_bonus = calculate_convective_cooling(wind_speed)
+    
+    print(f"Env: Alt={alt}, UV={uv}, Wind={wind_speed}km/h (Bonus={round(wind_bonus,2)})")
     
     G_copy = G.copy()
     for u, v, k, data in G_copy.edges(keys=True, data=True):
@@ -141,20 +146,21 @@ def get_weighted_graph(hours_offset=0):
             continue
             
         if is_hall:
-            data['weight'] = length * 0.05 # AC Bonus
+            # Building cut-throughs are VERY efficient thermally
+            data['weight'] = length * 0.01 
             data['exposure_ratio'] = 0
             continue
             
-        # Shade calculation (Optimized)
+        # Shade calculation
         geom = data.get('geometry')
         if not geom:
             geom = LineString([Point(G_copy.nodes[u]['x'], G_copy.nodes[u]['y']), Point(G_copy.nodes[v]['x'], G_copy.nodes[v]['y'])])
         
-        # Buffer check for nearby trees
+        # Check trees within 30m
         nearby_indices = tree_sindex.query(geom.buffer(0.0003))
         if len(nearby_indices) == 0:
             data['exposure_ratio'] = 1.0
-            data['weight'] = length * 21.0
+            data['weight'] = length * 25.0 # High penalty for direct sun
             continue
             
         nearby_trees = trees_df.iloc[nearby_indices]
@@ -168,19 +174,17 @@ def get_weighted_graph(hours_offset=0):
             shadow_polys.append(shadow.union(canopy).convex_hull)
             
         if shadow_polys:
-            if len(shadow_polys) == 1:
-                unified_shadow = shadow_polys[0]
-            else:
-                from shapely.ops import unary_union
-                unified_shadow = unary_union(shadow_polys)
+            from shapely.ops import unary_union
+            unified_shadow = unary_union(shadow_polys)
             shaded_part = geom.intersection(unified_shadow)
             exposure = 1.0 - (shaded_part.length / geom.length) if geom.length > 0 else 1.0
             data['exposure_ratio'] = max(0.0, min(1.0, exposure))
         else:
             data['exposure_ratio'] = 1.0
             
-        heat_penalty = 20.0 * wind_bonus
-        data['weight'] = length * (1 + (data['exposure_ratio'] * heat_penalty))
+        # Dijkstra Weight Equation: length * (1 + exposure * heat_penalty * wind_cooling)
+        heat_penalty = 30.0 * wind_bonus
+        data['weight'] = length * (1.0 + (data['exposure_ratio'] * heat_penalty))
     
     graph_cache[offset_key] = G_copy
     return G_copy
@@ -261,7 +265,7 @@ def get_route(start_lat: float, start_lon: float, end_lat: float, end_lon: float
         if f_exp > 0:
             sunlight_saved = int(max(0, (1.0 - (c_exp / f_exp)) * 100))
 
-    # Real-time or forecasted weather for response
+    # Forecasted weather for response
     weather = get_weather_data(time_offset)
     alt, az, uv = get_solar_pos(time_offset)
     
@@ -300,28 +304,21 @@ def get_route(start_lat: float, start_lon: float, end_lat: float, end_lon: float
         }
     }
         
-    alt, az, uv = get_solar_pos(time_offset)
-    weather = get_weather_data()
-    
-    return {
-        "type": "FeatureCollection",
-        "features": [f for f in [fastest_feature, coolest_feature] if f],
-        "sunlight_saved": max(0, sunlight_saved),
-        "uv_index": uv,
-        "wind": {
-            "speed": weather.get("wind_speed_10m"),
-            "direction": weather.get("wind_direction_10m")
-        },
-        "recommendation": {
-            "offset_minutes": int(best_offset * 60),
-            "is_now": best_offset == 0
-        }
-    }
+
 
 @app.get("/sun_position")
 def get_sun_position(hours_offset: float = 0):
     alt, az, uv = get_solar_pos(hours_offset)
     return {"altitude": round(alt, 1), "azimuth": round(az, 1), "uv_index": uv}
+
+@app.get("/weather")
+def get_weather(hours_offset: float = 0):
+    w = get_weather_data(hours_offset)
+    return {
+        "temp": w.get('temperature_2m'),
+        "wind_speed": w.get('wind_speed_10m'),
+        "wind_dir": w.get('wind_direction_10m')
+    }
 
 @app.get("/trees")
 def get_trees():
