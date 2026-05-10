@@ -113,6 +113,8 @@ function App() {
   const [endCoords, setEndCoords] = useState(null);
   
   const [routeData, setRouteData] = useState(null);
+  const [routeLoading, setRouteLoading] = useState(false);
+  const [routeError, setRouteError] = useState(null);
   const [activeRoute, setActiveRoute] = useState('coolest');
   
   const [treesData, setTreesData] = useState(null);
@@ -158,53 +160,98 @@ function App() {
 
   const handleSearch = () => {
     if (!startCoords || !endCoords) return;
+    setRouteData(null);
+    setRouteError(null);
+    setRouteLoading(true);
     setUiState('preview');
     fetch(`http://localhost:8000/route?start_lat=${startCoords.lat}&start_lon=${startCoords.lon}&end_lat=${endCoords.lat}&end_lon=${endCoords.lon}&time_offset=${timeOffset}`)
       .then(res => res.json())
-      .then(data => { if(!data.error) setRouteData(data); else alert(data.error); });
+      .then(data => {
+        setRouteLoading(false);
+        if (data.error) {
+          setRouteError(data.error);
+        } else if (!data.features || data.features.length === 0) {
+          setRouteError('No route found between those locations.');
+        } else {
+          setRouteData(data);
+          setActiveRoute('coolest');
+        }
+      })
+      .catch(err => {
+        setRouteLoading(false);
+        setRouteError(`Connection error: ${err.message}`);
+      });
   };
 
   const layers = [];
-  
+
+  // --- 3D BUILDINGS (rendered first so routes appear on top) ---
+  if (buildingsData?.features) {
+    layers.push(new GeoJsonLayer({
+      id: 'buildings-3d',
+      data: buildingsData,
+      extruded: true,
+      wireframe: false,
+      getElevation: d => {
+        const h = d.properties?.height;
+        if (h && !isNaN(h)) return parseFloat(h);
+        if (d.properties?.['building:levels']) return parseInt(d.properties['building:levels']) * 3.5;
+        return 10;
+      },
+      getFillColor: theme === 'dark'
+        ? [45, 55, 72, 200]
+        : [230, 228, 220, 200],
+      getLineColor: theme === 'dark'
+        ? [80, 100, 130, 160]
+        : [180, 175, 165, 200],
+      lineWidthMinPixels: 1,
+      pickable: false,
+      material: {
+        ambient: 0.35,
+        diffuse: 0.6,
+        shininess: 16,
+        specularColor: [60, 64, 70]
+      }
+    }));
+  }
+
+  // --- ROUTE LAYERS (rendered after buildings so they appear on top) ---
   if (routeData?.features && (uiState === 'preview' || uiState === 'nav')) {
-    // Render all routes in preview mode
     routeData.features.forEach(feature => {
       const isSelected = activeRoute === feature.properties.type;
       const isNav = uiState === 'nav';
       
       if (isNav && !isSelected) return;
 
+      // Glow layer underneath
+      layers.push(new GeoJsonLayer({
+        id: `route-glow-${feature.properties.type}`,
+        data: feature,
+        lineWidthUnits: 'pixels',
+        getLineColor: feature.properties.type === 'coolest'
+          ? [0, 255, 255, isSelected ? 50 : 20]
+          : [255, 140, 0, isSelected ? 50 : 20],
+        getLineWidth: isSelected ? 28 : 14,
+        pickable: false,
+        parameters: { depthTest: false }
+      }));
+
+      // Main line
       layers.push(new GeoJsonLayer({
         id: `route-layer-${feature.properties.type}`,
         data: feature,
         lineWidthUnits: 'pixels',
-        getLineColor: feature.properties.type === 'coolest' 
-          ? [0, 255, 255, isSelected ? 255 : 120] 
-          : [255, 140, 0, isSelected ? 255 : 120],
-        getLineWidth: isSelected ? 12 : 6,
+        getLineColor: feature.properties.type === 'coolest'
+          ? [0, 230, 255, isSelected ? 255 : 140]
+          : [255, 140, 0, isSelected ? 255 : 140],
+        getLineWidth: isSelected ? 10 : 5,
         pickable: true,
-        parameters: {
-          depthTest: true
-        },
+        parameters: { depthTest: false },
         updateTriggers: {
           getLineColor: [activeRoute],
           getLineWidth: [activeRoute]
         }
       }));
-      
-      // Add a "glow" layer for the active route
-      if (isSelected) {
-        layers.push(new GeoJsonLayer({
-          id: `route-layer-glow-${feature.properties.type}`,
-          data: feature,
-          lineWidthUnits: 'pixels',
-          getLineColor: feature.properties.type === 'coolest' 
-            ? [0, 255, 255, 60] 
-            : [255, 140, 0, 60],
-          getLineWidth: 24,
-          pickable: false
-        }));
-      }
     });
   }
   
@@ -248,28 +295,7 @@ function App() {
     }));
   }
 
-  if (buildingsData?.features) {
-    layers.push(new GeoJsonLayer({
-      id: 'buildings-3d',
-      data: buildingsData,
-      extruded: true,
-      getElevation: d => {
-        if (d.properties.height) return d.properties.height;
-        if (d.properties['building:levels']) return parseInt(d.properties['building:levels']) * 4;
-        return 12;
-      },
-      getFillColor: [240, 240, 245, 150],
-      getLineColor: [200, 200, 210, 255],
-      lineWidthMinPixels: 1,
-      pickable: true,
-      material: {
-        ambient: 0.2,
-        diffuse: 0.8,
-        shininess: 32,
-        specularColor: [255, 255, 255]
-      }
-    }));
-  }
+  // (buildings layer is rendered early above - this block intentionally removed)
   if (communitySpots?.features) {
     layers.push(new IconLayer({
       id: 'community-spots',
@@ -335,26 +361,38 @@ function App() {
           {uiState === 'preview' && (
             <>
               <div className="route-selection">
-                <h3>Routes found</h3>
-                <div className={`route-card ${activeRoute === 'coolest' ? 'active' : ''}`} onClick={() => setActiveRoute('coolest')}>
-                  <div className="header">
-                    <span>{sunPosition.altitude > 0 ? "Coolest Path ❄️" : "Standard Path 👣"}</span>
-                    {routeData?.sunlight_saved > 0 && sunPosition.altitude > 0 && (
-                      <span className="badge">☀️ -{routeData.sunlight_saved}% sun</span>
-                    )}
-                  </div>
-                  <div className="time">{routeData?.features.find(f => f.properties.type === 'coolest')?.properties.time_mins || '-'} min</div>
-                  <div className="subtext">{sunPosition.altitude > 0 ? "Includes AC Hallways & Shade" : "Optimal night path"}</div>
-                  {routeData?.uv_index > 0 && <div className="uv-info">UV Index: {routeData.uv_index}</div>}
-                </div>
-                <div className={`route-card ${activeRoute === 'fastest' ? 'active' : ''}`} onClick={() => setActiveRoute('fastest')}>
-                  <div className="header"><span>Fastest Path 🔥</span></div>
-                  <div className="time" style={{color: '#e65100'}}>{routeData?.features.find(f => f.properties.type === 'fastest')?.properties.time_mins || '-'} min</div>
-                  <div className="subtext">Shortest physical distance</div>
-                  {routeData?.uv_index > 8 && <div className="uv-warning">⚠️ High UV Exposure</div>}
-                </div>
+                <h3>{routeLoading ? 'Calculating routes...' : routeError ? 'Route Error' : 'Routes found'}</h3>
+                {routeError && <div style={{color:'#ff6b6b',fontSize:'0.85rem',margin:'8px 0'}}>{routeError}</div>}
+                {routeLoading && <div style={{textAlign:'center',padding:'20px',opacity:0.7}}>⏳ Finding best paths...</div>}
+                {!routeLoading && !routeError && routeData && (
+                  <>
+                    <div className={`route-card ${activeRoute === 'coolest' ? 'active' : ''}`} onClick={() => setActiveRoute('coolest')}>
+                      <div className="header">
+                        <span>{sunPosition.altitude > 0 ? "Coolest Path ❄️" : "Standard Path 👣"}</span>
+                        {routeData?.sunlight_saved > 0 && sunPosition.altitude > 0 && (
+                          <span className="badge">☀️ -{routeData.sunlight_saved}% sun</span>
+                        )}
+                      </div>
+                      <div className="time">
+                        {routeData.features.find(f => f.properties.type === 'coolest')?.properties?.time_mins ?? '?'} min
+                      </div>
+                      <div className="subtext">{sunPosition.altitude > 0 ? "Includes AC Hallways & Shade" : "Optimal night path"}</div>
+                      {routeData?.uv_index > 0 && <div className="uv-info">UV Index: {routeData.uv_index}</div>}
+                    </div>
+                    <div className={`route-card ${activeRoute === 'fastest' ? 'active' : ''}`} onClick={() => setActiveRoute('fastest')}>
+                      <div className="header"><span>Fastest Path 🔥</span></div>
+                      <div className="time" style={{color: '#e65100'}}>
+                        {routeData.features.find(f => f.properties.type === 'fastest')?.properties?.time_mins ?? '?'} min
+                      </div>
+                      <div className="subtext">Shortest physical distance</div>
+                      {routeData?.uv_index > 8 && <div className="uv-warning">⚠️ High UV Exposure</div>}
+                    </div>
+                  </>
+                )}
               </div>
-              <button className="action-btn" onClick={() => setUiState('nav')}>Start Navigation</button>
+              {!routeLoading && routeData && (
+                <button className="action-btn" onClick={() => setUiState('nav')}>Start Navigation</button>
+              )}
               <button className="action-btn secondary" onClick={() => setUiState('search')}>Back to Search</button>
             </>
           )}
