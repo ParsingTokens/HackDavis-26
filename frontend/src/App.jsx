@@ -17,11 +17,10 @@ const treeColor = (n) => {
   if (!n) return [40, 100, 40];
   const l = n.toLowerCase();
   if (l.includes('oak')) return [20, 70, 20];
-  if (l.includes('pine')) return [10, 50, 10];
   return [30, 90, 30];
 };
 
-// ANIMATED SUN RAYS (TripsLayer)
+// VIVID SUN STREAMS
 const makeSunTrips = (az, alt) => {
   if (alt <= 0) return [];
   const rays = [];
@@ -39,59 +38,49 @@ const makeSunTrips = (az, alt) => {
   return rays;
 };
 
+// CRESCENT WIND PARTICLES (Wining crescents)
 const makeWindTrips = (dir) => {
   if (dir === undefined) return [];
   const rays = [];
   const rad = (dir - 180) * Math.PI / 180;
-  const dx = 0.002 * Math.sin(rad), dy = 0.002 * Math.cos(rad);
-  for (let i = 0; i < 250; i++) {
+  // Wind vector
+  const vx = 0.0012 * Math.sin(rad), vy = 0.0012 * Math.cos(rad);
+  // Perpendicular for crescent curve
+  const px = -vy * 0.4, py = vx * 0.4;
+  
+  for (let i = 0; i < 300; i++) {
     const lat = 38.50 + Math.random() * 0.08, lon = -121.79 + Math.random() * 0.08;
-    const z = 5 + Math.random() * 50;
+    const z = 8 + Math.random() * 40;
     const path = [];
-    for (let j = 0; j < 10; j++) path.push([lon + dx*j, lat + dy*j, z]);
+    // 3-point crescent shape
+    path.push([lon, lat, z]);
+    path.push([lon + vx * 0.5 + px, lat + vy * 0.5 + py, z]);
+    path.push([lon + vx, lat + vy, z]);
+    
     const off = Math.random() * 10000;
-    rays.push({ path, ts: path.map((_, idx) => off + idx * 300) });
+    rays.push({ path, ts: path.map((_, idx) => off + idx * 500) });
   }
   return rays;
 };
 
-// LOCAL-FIRST AUTOCOMPLETE (ULTRA FAST)
 function SearchInput({ placeholder, value, onChange, onSelect, pois, isDeparture }) {
   const [results, setResults] = useState([]);
   const [open, setOpen] = useState(false);
-
   useEffect(() => {
     if (value.length > 0 && open && value !== 'Current Location') {
       const v = value.toLowerCase();
-      const filtered = pois.filter(p => p.name.toLowerCase().includes(v)).slice(0, 10);
-      setResults(filtered);
+      setResults(pois.filter(p => p.name.toLowerCase().includes(v)).slice(0, 10));
     } else { setResults([]); }
   }, [value, open, pois]);
-
   return (
     <div className="search-input-wrapper">
-      <input type="text" placeholder={placeholder} value={value} 
-        onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 200)}
-        onChange={e => { onChange(e.target.value); setOpen(true); }} />
-      {isDeparture && <button className="current-loc-btn" onClick={() => {
-        navigator.geolocation?.getCurrentPosition(p => { onChange('Current Location'); onSelect(p.coords.latitude, p.coords.longitude); }, null, { enableHighAccuracy: true });
-      }}>Nearby</button>}
+      <input type="text" placeholder={placeholder} value={value} onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 200)} onChange={e => { onChange(e.target.value); setOpen(true); }} />
+      {isDeparture && <button className="current-loc-btn" onClick={() => { navigator.geolocation?.getCurrentPosition(p => { onChange('Current Location'); onSelect(p.coords.latitude, p.coords.longitude); }, null, { enableHighAccuracy: true }); }}>Nearby</button>}
       {open && results.length > 0 && (
         <div className="autocomplete-dropdown" style={{display:'block'}}>
           {results.map((r, i) => <div key={i} className="autocomplete-item" onMouseDown={e => { e.preventDefault(); onChange(r.name); onSelect(r.lat, r.lon); setOpen(false); }}>{r.name}</div>)}
         </div>
       )}
-    </div>
-  );
-}
-
-function Compass({ bearing }) {
-  return (
-    <div className="compass" style={{ transform: `rotate(${-bearing}deg)` }}>
-      <div className="compass-ring">
-        <span className="compass-n">N</span><span className="compass-e">E</span><span className="compass-s">S</span><span className="compass-w">W</span>
-        <div className="compass-needle" />
-      </div>
     </div>
   );
 }
@@ -119,7 +108,7 @@ export default function App() {
     fetch('http://localhost:8000/trees').then(r => r.json()).then(setTrees);
     fetch('http://localhost:8000/buildings').then(r => r.json()).then(setBldg);
     fetch('http://localhost:8000/pois').then(r => r.json()).then(d => setPois(Array.isArray(d) ? d : []));
-    const a = () => { setTick(t => (t + 20) % 15000); requestAnimationFrame(a); };
+    const a = () => { setTick(t => (t + 25) % 15000); requestAnimationFrame(a); };
     const id = requestAnimationFrame(a);
     return () => cancelAnimationFrame(id);
   }, []);
@@ -130,15 +119,12 @@ export default function App() {
     fetch(`http://localhost:8000/route?start_lat=${sc.lat}&start_lon=${sc.lon}&end_lat=${ec.lat}&end_lon=${ec.lon}&time_offset=${timeOff}`)
       .then(r => r.json()).then(d => {
         setLoading(false);
-        if (d.error) setErr(d.error);
-        else { setRd(d); setWeather(d.weather); setUi('preview'); }
-      }).catch(() => { setLoading(false); setErr('Calculation failed.'); });
+        if (d.error) setErr(d.error); else { setRd(d); setWeather(d.weather); setUi('preview'); }
+      }).catch(() => { setLoading(false); setErr('Connection failed.'); });
   }, [sc, ec, timeOff]);
 
   useEffect(() => {
-    fetch(`http://localhost:8000/sun_position?hours_offset=${timeOff}`).then(r => r.json()).then(d => {
-      setSun({ alt: d.altitude, az: d.azimuth }); setTheme(d.altitude > 0 ? 'light' : 'dark');
-    });
+    fetch(`http://localhost:8000/sun_position?hours_offset=${timeOff}`).then(r => r.json()).then(d => { setSun({ alt: d.altitude, az: d.azimuth }); setTheme(d.altitude > 0 ? 'light' : 'dark'); });
     fetch(`http://localhost:8000/weather?hours_offset=${timeOff}`).then(r => r.json()).then(setWeather);
   }, [timeOff]);
 
@@ -148,8 +134,8 @@ export default function App() {
   const layers = [
     bldg && new GeoJsonLayer({
       id: 'bldg', data: bldg, extruded: true, getElevation: d => d.properties?.height || 10,
-      getFillColor: theme === 'dark' ? [30, 40, 60, 255] : [100, 110, 130, 255],
-      opacity: tintMode ? 0.2 : 1, material: { ambient: 0.7, diffuse: 0.3 }
+      getFillColor: theme === 'dark' ? [20, 30, 50, 255] : [100, 110, 130, 255],
+      opacity: tintMode ? 0.2 : 1, material: { ambient: 0.8, diffuse: 0.2 }
     }),
     trees?.features && [
       new ColumnLayer({ id: 'tr', data: trees.features, getPosition: d => d.geometry.coordinates, getFillColor: [60, 40, 20], radius: 0.5, extruded: true, getElevation: 3 }),
@@ -157,7 +143,6 @@ export default function App() {
     ],
     rd?.features.map(f => {
       const a = activeRoute === f.properties.type;
-      if (ui === 'nav' && !a) return null;
       return new GeoJsonLayer({
         id: `r-${f.properties.type}`, data: f, lineWidthUnits: 'pixels',
         getLineColor: f.properties.type === 'coolest' ? [0, 200, 255, a ? 255 : 120] : [255, 150, 0, a ? 255 : 120],
@@ -165,15 +150,17 @@ export default function App() {
       });
     }),
     sun.alt > 0 && new TripsLayer({
-      id: 'sun-stream', data: sunTrips, getPath: d => d.path, getTimestamps: d => d.ts,
-      getColor: [255, 230, 150, 200], widthMinPixels: 4, trailLength: 6000, currentTime: tick, parameters: { depthTest: false }
+      id: 'sun', data: sunTrips, getPath: d => d.path, getTimestamps: d => d.ts,
+      getColor: [255, 245, 180, 255], widthMinPixels: 4, trailLength: 6000, currentTime: tick, parameters: { depthTest: false }
     }),
     new TripsLayer({
-      id: 'wind-stream', data: windTrips, getPath: d => d.path, getTimestamps: d => d.ts,
-      getColor: theme === 'light' ? [0, 0, 0, 180] : [220, 240, 255, 200],
-      widthMinPixels: 3, trailLength: 2000, currentTime: tick, parameters: { depthTest: false }
+      id: 'wind', data: windTrips, getPath: d => d.path, getTimestamps: d => d.ts,
+      // WHITER/GRAYER WIND
+      getColor: [240, 240, 240, 220], widthMinPixels: 3, trailLength: 2500, currentTime: tick, parameters: { depthTest: false }
     })
   ].flat().filter(Boolean);
+
+  const clock = (off) => { const d = new Date(); d.setHours(d.getHours() + off); return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); };
 
   return (
     <>
@@ -181,45 +168,45 @@ export default function App() {
         <div className="sidebar-header"><h1>Canopy</h1></div>
         <div className="sidebar-content">
           <div className="ui-section">
-            <span className="section-title">Time Control</span>
+            <span className="section-title">Schedule</span>
             <div className="input-group" style={{flexDirection:'row', alignItems:'center', gap:'12px'}}>
               <input type="number" value={timeOff} onChange={e => setTimeOff(parseFloat(e.target.value))} 
                 style={{width:'80px', padding:'12px', fontSize:'1.2rem', fontWeight:800, borderRadius:'10px', border:'2px solid var(--primary-accent)'}} />
-              <span style={{fontWeight:700}}>Hours later</span>
+              <span style={{fontWeight:700}}>Hours ahead</span>
             </div>
+            <div style={{marginTop:'12px', fontSize:'1rem', color:'var(--primary-accent)', fontWeight:800}}>Forecast: {clock(timeOff)}</div>
             <button className={`action-btn secondary ${tintMode ? 'active' : ''}`} onClick={() => setTintMode(!tintMode)} style={{marginTop:'15px'}}>
-              {tintMode ? 'Vivid Mode' : 'Atmospheric Mode'}
+              {tintMode ? 'Visual Tint: ON' : 'Visual Tint: OFF'}
             </button>
           </div>
           <div className="ui-section">
-            <span className="section-title">Quick Search</span>
-            <SearchInput placeholder="From Building..." value={sq} onChange={setSq} onSelect={(lat, lon) => setSc({ lat, lon })} pois={pois} isDeparture />
-            <SearchInput placeholder="To Building..." value={eq} onChange={setEq} onSelect={(lat, lon) => setEc({ lat, lon })} pois={pois} />
-            <button className="action-btn" onClick={doRoute} disabled={loading} style={{marginTop:'12px'}}>{loading ? 'Pathfinding...' : 'Go'}</button>
+            <span className="section-title">Navigation</span>
+            <SearchInput placeholder="From Building" value={sq} onChange={setSq} onSelect={(lat, lon) => setSc({ lat, lon })} pois={pois} isDeparture />
+            <SearchInput placeholder="To Building" value={eq} onChange={setEq} onSelect={(lat, lon) => setEc({ lat, lon })} pois={pois} />
+            <button className="action-btn" onClick={doRoute} disabled={loading} style={{marginTop:'12px'}}>{loading ? 'Calculating...' : 'Go'}</button>
           </div>
           {ui === 'preview' && rd && (
             <div className="ui-section">
               {rd.features.map(f => (
                 <div key={f.properties.type} className={`route-card ${activeRoute === f.properties.type ? 'active' : ''}`} onClick={() => setActiveRoute(f.properties.type)}>
-                  <div style={{fontWeight:800}}>{f.properties.type === 'coolest' ? 'Coolest Path' : 'Fastest Path'}</div>
+                  <div style={{fontWeight:800}}>{f.properties.type === 'coolest' ? 'Cooler' : 'Efficient'}</div>
                   <div style={{fontSize:'1.3rem', color: f.properties.type === 'coolest' ? 'var(--cool-blue)' : 'var(--warm-orange)', fontWeight:900}}>{f.properties.time_mins} min</div>
                 </div>
               ))}
-              <button className="action-btn" onClick={() => setUi('nav')} style={{marginTop:'12px'}}>Start Navigation</button>
+              <button className="action-btn" onClick={() => setUi('nav')} style={{marginTop:'12px'}}>Start Walking</button>
               <button className="action-btn secondary" onClick={() => {setUi('search'); setRd(null); setSq(''); setEq(''); setSc(null); setEc(null);}}>Reset</button>
             </div>
           )}
           {ui === 'nav' && (
             <div className="ui-section">
               {rd?.features.find(f => f.properties.type === activeRoute)?.properties?.instructions?.map((inst, i) => <div key={i} className="instruction-item" style={{padding:'10px 0', borderBottom:'1px solid #eee', fontSize:'0.9rem'}}>{inst}</div>)}
-              <button className="action-btn secondary" onClick={() => setUi('search')} style={{marginTop:'12px'}}>Exit</button>
+              <button className="action-btn secondary" onClick={() => setUi('search')} style={{marginTop:'12px'}}>End Trip</button>
             </div>
           )}
         </div>
       </div>
       <div className="map-container">
-        <Compass bearing={vs.bearing} />
-        {tintMode && <div style={{position:'absolute', inset:0, background:'rgba(5,10,25,0.7)', pointerEvents:'none', zIndex:1}} />}
+        {tintMode && <div style={{position:'absolute', inset:0, background:'rgba(5,10,25,0.75)', pointerEvents:'none', zIndex:1}} />}
         <DeckGL viewState={vs} onViewStateChange={({ viewState }) => setVs(viewState)} controller layers={layers}>
           <Map mapStyle={THEMES[theme]} mapLib={maplibregl} />
         </DeckGL>
