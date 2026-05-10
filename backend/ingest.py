@@ -12,12 +12,12 @@ import geopandas as gpd
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def build_routing_graph():
-    place = "Davis, California, USA"
-    print(f"Fetching walk network for {place}...")
-    G = ox.graph_from_place(place, network_type="walk")
+    places = ["Davis, California, USA", "University of California, Davis"]
+    print(f"Fetching walk network for {places}...")
+    G = ox.graph_from_place(places, network_type="walk")
     
     print("Fetching building footprints...")
-    buildings = ox.features_from_place(place, tags={'building': True})
+    buildings = ox.features_from_place(places, tags={'building': True})
     buildings = buildings[buildings.geometry.type.isin(['Polygon', 'MultiPolygon'])]
     
     print("Saving buildings.geojson...")

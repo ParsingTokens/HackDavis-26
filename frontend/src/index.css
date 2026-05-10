@@ -218,7 +218,22 @@ body {
 .route-card.active {
   border-color: var(--primary-accent);
   background: #f0f8f1;
-  box-shadow: var(--shadow-md);
+  box-shadow: 0 10px 25px rgba(129, 199, 132, 0.25);
+  transform: scale(1.02);
+}
+
+.route-card.active::before {
+  content: '✓ Selected';
+  position: absolute;
+  top: -10px;
+  right: 10px;
+  background: var(--primary-dark);
+  color: white;
+  font-size: 0.65rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 .route-card .header {

@@ -209,9 +209,14 @@ def get_route(start_lat: float, start_lon: float, end_lat: float, end_lon: float
     
     sunlight_saved = 0
     if fastest_feature and coolest_feature:
-        f_exp = fastest_feature['properties']['exposure_ratio']
-        c_exp = coolest_feature['properties']['exposure_ratio']
-        if f_exp > 0: sunlight_saved = int((1.0 - (c_exp / f_exp)) * 100)
+        f_exp = fastest_feature['properties'].get('exposure_ratio', 1.0)
+        c_exp = coolest_feature['properties'].get('exposure_ratio', 1.0)
+        if f_exp > 0:
+            sunlight_saved = int(max(0, (1.0 - (c_exp / f_exp)) * 100))
+        elif c_exp == 0 and f_exp == 0:
+            sunlight_saved = 0
+    
+    alt, az, uv = get_solar_pos(time_offset)
     
     return {
         "type": "FeatureCollection",

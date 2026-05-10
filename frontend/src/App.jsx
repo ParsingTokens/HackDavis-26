@@ -7,10 +7,10 @@ import { GeoJsonLayer, ColumnLayer, IconLayer } from '@deck.gl/layers';
 import { TripsLayer } from '@deck.gl/geo-layers';
 
 const INITIAL_VIEW_STATE = {
-  longitude: -121.7405,
-  latitude: 38.5449,
-  zoom: 15.5,
-  pitch: 60,
+  longitude: -121.7490,
+  latitude: 38.5410,
+  zoom: 16.5,
+  pitch: 45,
   bearing: 0
 };
 
@@ -177,17 +177,34 @@ function App() {
       layers.push(new GeoJsonLayer({
         id: `route-layer-${feature.properties.type}`,
         data: feature,
-        lineWidthMinPixels: isSelected ? 8 : 4,
+        lineWidthUnits: 'pixels',
         getLineColor: feature.properties.type === 'coolest' 
-          ? [77, 208, 225, isSelected ? 255 : 150] 
-          : [255, 183, 77, isSelected ? 255 : 150],
-        getLineWidth: isSelected ? 18 : 10,
+          ? [0, 255, 255, isSelected ? 255 : 120] 
+          : [255, 140, 0, isSelected ? 255 : 120],
+        getLineWidth: isSelected ? 12 : 6,
         pickable: true,
+        parameters: {
+          depthTest: true
+        },
         updateTriggers: {
           getLineColor: [activeRoute],
           getLineWidth: [activeRoute]
         }
       }));
+      
+      // Add a "glow" layer for the active route
+      if (isSelected) {
+        layers.push(new GeoJsonLayer({
+          id: `route-layer-glow-${feature.properties.type}`,
+          data: feature,
+          lineWidthUnits: 'pixels',
+          getLineColor: feature.properties.type === 'coolest' 
+            ? [0, 255, 255, 60] 
+            : [255, 140, 0, 60],
+          getLineWidth: 24,
+          pickable: false
+        }));
+      }
     });
   }
   
@@ -197,24 +214,37 @@ function App() {
       id: 'tree-trunks',
       data: treesData.features,
       getPosition: d => d.geometry.coordinates,
-      getFillColor: [80, 50, 20, 255],
-      radius: 0.5,
+      getFillColor: [60, 40, 20, 255],
+      radius: 0.25,
       extruded: true,
-      getElevation: 2,
+      getElevation: 3,
       pickable: false
     }));
 
-    // Tree Canopies - using a slightly wider and taller column for a "puffy" look
+    // Tree Canopy - Bottom Tier
     layers.push(new ColumnLayer({
-      id: 'tree-canopies',
+      id: 'tree-canopy-bottom',
+      data: treesData.features,
+      getPosition: d => d.geometry.coordinates,
+      getFillColor: d => [...getTreeColor(d.properties.common), 180],
+      radius: 3.5,
+      diskResolution: 12,
+      extruded: true,
+      getElevation: d => (d.properties.height_m || 8) * 0.7,
+      pickable: true
+    }));
+
+    // Tree Canopy - Top Tier (creates a tapered/pointed look)
+    layers.push(new ColumnLayer({
+      id: 'tree-canopy-top',
       data: treesData.features,
       getPosition: d => d.geometry.coordinates,
       getFillColor: d => [...getTreeColor(d.properties.common), 220],
-      radius: 4,
-      diskResolution: 20,
+      radius: 1.8,
+      diskResolution: 12,
       extruded: true,
       getElevation: d => d.properties.height_m || 8,
-      pickable: true
+      pickable: false
     }));
   }
 
@@ -331,9 +361,12 @@ function App() {
 
           {uiState === 'nav' && (
             <>
-              <div className="nav-header"><h3>Navigation</h3><button className="action-btn secondary" onClick={() => setUiState('search')}>End Path</button></div>
+              <div className="nav-header">
+                <h3>Navigation</h3>
+                <button className="action-btn secondary" onClick={() => setUiState('search')}>End Path</button>
+              </div>
               <div className="instructions-list">
-                {activeFeature?.properties?.instructions?.map((inst, idx) => (
+                {routeData?.features.find(f => f.properties.type === activeRoute)?.properties?.instructions?.map((inst, idx) => (
                   <div key={idx} className="instruction-item"><span className="icon">👣</span><span>{inst}</span></div>
                 ))}
               </div>
