@@ -44,11 +44,11 @@ const generateSunRays = (az, alt) => {
     const lat = 38.51 + Math.random() * 0.06;
     const lon = -121.78 + Math.random() * 0.06;
     const path = [];
-    let currZ = 220 + Math.random() * 180;
+    let currZ = 200 + Math.random() * 150;
     const drop = 22 * (alt / 90 + 0.5);
     const dx = 0.00016 * Math.sin(az * Math.PI / 180);
     const dy = 0.00016 * Math.cos(az * Math.PI / 180);
-    for (let j = 0; j < 14; j++) {
+    for (let j = 0; j < 12; j++) {
       path.push([lon + dx*j, lat + dy*j, currZ - drop*j]);
     }
     const offset = Math.random() * 15000;
@@ -60,7 +60,7 @@ const generateSunRays = (az, alt) => {
 const generateWindRays = (dir) => {
   if (!dir) return [];
   const rays = [];
-  const count = 350;
+  const count = 300;
   const rad = (dir - 180) * Math.PI / 180;
   const dx = 0.001 * Math.sin(rad);
   const dy = 0.001 * Math.cos(rad);
@@ -68,8 +68,8 @@ const generateWindRays = (dir) => {
     const lat = 38.50 + Math.random() * 0.08;
     const lon = -121.79 + Math.random() * 0.08;
     const path = [];
-    let z = 5 + Math.random() * 70;
-    for (let j = 0; j < 12; j++) {
+    let z = 10 + Math.random() * 60;
+    for (let j = 0; j < 10; j++) {
       path.push([lon + dx*j, lat + dy*j, z]);
     }
     const offset = Math.random() * 10000;
@@ -93,7 +93,7 @@ function SearchInput({ placeholder, value, onChange, onSelect, isDeparture = fal
         const { latitude, longitude } = pos.coords;
         onChange("Current Location");
         onSelect(latitude, longitude);
-      }, (err) => console.error(err), { enableHighAccuracy: true, timeout: 10000 });
+      }, (err) => console.error(err), { enableHighAccuracy: true });
     }
   };
 
@@ -101,8 +101,8 @@ function SearchInput({ placeholder, value, onChange, onSelect, isDeparture = fal
     if (value.length > 1 && showDropdown && value !== "Current Location") {
       const localMatches = pois.filter(p => p.name.toLowerCase().includes(value.toLowerCase()));
       const delay = setTimeout(() => {
-        // Optimized query to prioritize UC Davis locations
-        fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${value}, UC Davis, Davis, California`)
+        // Broadened search to include all UC Davis halls and California locations
+        fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${value}, UC Davis, Davis, CA`)
           .then(res => res.json())
           .then(data => {
             const apiRes = data.map(r => ({ name: r.display_name.split(',')[0], lat: parseFloat(r.lat), lon: parseFloat(r.lon) }));
@@ -151,67 +151,68 @@ function App() {
   const [sunPos, setSunPos] = useState({ altitude: -20, azimuth: 0, uv: 0 });
   const [time, setTime] = useState(0);
 
-  const searchTimeoutRef = useRef(null);
+  const debounceTimer = useRef(null);
 
   useEffect(() => {
     fetch('http://localhost:8000/trees').then(res => res.json()).then(data => setTreesData(data));
     fetch('http://localhost:8000/buildings').then(res => res.json()).then(data => setBuildingsData(data));
-    const animate = () => { setTime(t => (t + 20) % 20000); requestAnimationFrame(animate); };
+    const animate = () => { setTime(t => (t + 15) % 20000); requestAnimationFrame(animate); };
     const reqId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(reqId);
   }, []);
 
-  const handleSearch = () => {
+  const handleSearch = (immediate = true) => {
     if (!startCoords || !endCoords) return;
-    setRouteLoading(true);
-    setRouteError(null);
-    fetch(`http://localhost:8000/route?start_lat=${startCoords.lat}&start_lon=${startCoords.lon}&end_lat=${endCoords.lat}&end_lon=${endCoords.lon}&time_offset=${timeOffset}`)
-      .then(res => res.json())
-      .then(data => {
-        setRouteLoading(false);
-        if (data.error) setRouteError(data.error);
-        else {
-          setRouteData(data);
-          setActiveRoute('coolest');
-          setWeather(data.weather);
-          if (uiState === 'search' || uiState === 'preview') {
-            setUiState('preview');
-            const coords = data.features.flatMap(f => f.geometry.coordinates);
-            if (coords.length > 0) {
-              const lons = coords.map(c => c[0]), lats = coords.map(c => c[1]);
-              const vp = new WebMercatorViewport(viewState);
-              const { longitude, latitude, zoom } = vp.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], { padding: 80 });
-              setViewState({ ...viewState, longitude, latitude, zoom: zoom - 0.1 });
+    
+    const triggerSearch = () => {
+      setRouteLoading(true);
+      setRouteError(null);
+      fetch(`http://localhost:8000/route?start_lat=${startCoords.lat}&start_lon=${startCoords.lon}&end_lat=${endCoords.lat}&end_lon=${endCoords.lon}&time_offset=${timeOffset}`)
+        .then(res => res.json())
+        .then(data => {
+          setRouteLoading(false);
+          if (data.error) setRouteError(data.error);
+          else {
+            setRouteData(data);
+            setActiveRoute('coolest');
+            setWeather(data.weather);
+            if (uiState === 'search' || uiState === 'preview') {
+              setUiState('preview');
+              const coords = data.features.flatMap(f => f.geometry.coordinates);
+              if (coords.length > 0) {
+                const lons = coords.map(c => c[0]), lats = coords.map(c => c[1]);
+                const vp = new WebMercatorViewport(viewState);
+                const { longitude, latitude, zoom } = vp.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], { padding: 80 });
+                setViewState({ ...viewState, longitude, latitude, zoom: zoom - 0.1 });
+              }
             }
           }
-        }
-      })
-      .catch((err) => { 
-        setRouteLoading(false); 
-        setRouteError("Connection error. Ensure backend is running."); 
-      });
+        })
+        .catch(() => { setRouteLoading(false); setRouteError("Calculation failed."); });
+    };
+
+    if (immediate) {
+      triggerSearch();
+    } else {
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
+      debounceTimer.current = setTimeout(triggerSearch, 600);
+    }
   };
 
+  // Sync environment and trigger debounced search on slider change
   useEffect(() => {
-    // Update environment when slider moves
     fetch(`http://localhost:8000/sun_position?hours_offset=${timeOffset}`).then(res => res.json()).then(data => {
       setSunPos({ altitude: data.altitude, azimuth: data.azimuth, uv: data.uv_index });
       setTheme(data.altitude > 0 ? 'light' : 'dark');
     });
     fetch(`http://localhost:8000/weather?hours_offset=${timeOffset}`).then(res => res.json()).then(data => setWeather(data));
     
-    // Auto-recalculate if locations are already set
-    if (startCoords && endCoords) {
-      if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
-      searchTimeoutRef.current = setTimeout(() => {
-        handleSearch();
-      }, 600);
-    }
+    if (startCoords && endCoords) handleSearch(false);
   }, [timeOffset]);
 
-  // Immediate recalculation on new coordinate selection
+  // Immediate search on coordinate selection
   useEffect(() => {
-    if (startCoords && endCoords) handleSearch();
+    if (startCoords && endCoords) handleSearch(true);
   }, [startCoords, endCoords]);
 
   const sunRays = useMemo(() => generateSunRays(sunPos.azimuth, sunPos.altitude), [sunPos]);
@@ -223,10 +224,10 @@ function App() {
       data: buildingsData,
       extruded: true,
       getElevation: d => d.properties?.height || 10,
-      // Darken buildings in light mode for better contrast
-      getFillColor: theme === 'dark' ? [45, 55, 72, 220] : [100, 116, 139, 200], 
-      getLineColor: [50, 60, 80, 80],
-      material: { ambient: 0.6, diffuse: 0.4, shininess: 30 }
+      // Darkened buildings in daytime for better visibility of wind/path
+      getFillColor: theme === 'dark' ? [45, 55, 72, 220] : [100, 116, 139, 210],
+      getLineColor: [80, 100, 120, 80],
+      material: { ambient: 0.5, diffuse: 0.5, shininess: 20 }
     }),
     treesData && [
       new ColumnLayer({
@@ -250,13 +251,13 @@ function App() {
     }),
     sunPos.altitude > 0 && new TripsLayer({
       id: 'sun-rays', data: sunRays, getPath: d => d.path, getTimestamps: d => d.timestamps,
-      getColor: [255, 255, 255, 50], widthMinPixels: 2.5, trailLength: 4000, currentTime: time, parameters: { depthTest: false }
+      getColor: [255, 255, 255, 30], widthMinPixels: 1.2, trailLength: 4000, currentTime: time, parameters: { depthTest: false }
     }),
     new TripsLayer({
       id: 'wind-rays', data: windRays, getPath: d => d.path, getTimestamps: d => d.timestamps,
-      // More visible wind in day mode
-      getColor: theme === 'light' ? [255, 255, 255, 120] : [255, 255, 255, 70], 
-      widthMinPixels: 2.5, trailLength: 2000, currentTime: time, parameters: { depthTest: false }
+      // Enhanced wind visibility in day mode
+      getColor: theme === 'light' ? [255, 255, 255, 140] : [255, 255, 255, 60], 
+      widthMinPixels: 2, trailLength: 1500, currentTime: time, parameters: { depthTest: false }
     })
   ].flat().filter(Boolean);
 
@@ -265,7 +266,7 @@ function App() {
     return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   };
 
-  const resetSearch = () => {
+  const resetAll = () => {
     setUiState('search');
     setRouteData(null);
     setRouteLoading(false);
@@ -286,7 +287,7 @@ function App() {
             <span className="section-title">Schedule</span>
             <div className="time-controls">
               <label style={{fontSize: '0.8rem', fontWeight: 700}}>
-                {sunPos.altitude > 0 ? "☀️ Daytime" : "🌙 Nighttime"}
+                {sunPos.altitude > 0 ? "☀️ Day Mode" : "🌙 Night Mode"}
                 <span style={{float: 'right', color: 'var(--primary-accent)'}}>{getClock(timeOffset)}</span>
               </label>
               <input type="range" min="0" max="24" step="0.5" value={timeOffset} onChange={(e) => setTimeOffset(parseFloat(e.target.value))} className="time-slider" />
@@ -295,31 +296,31 @@ function App() {
           <div className="ui-section">
             <span className="section-title">Navigation</span>
             <div className="input-group">
-              <SearchInput placeholder="From Hall/Building..." value={startQuery} onChange={setStartQuery} onSelect={(lat, lon) => setStartCoords({lat, lon})} isDeparture={true} />
-              <SearchInput placeholder="To Hall/Building..." value={endQuery} onChange={setEndQuery} onSelect={(lat, lon) => setEndCoords({lat, lon})} />
+              <SearchInput placeholder="From Hall/Building" value={startQuery} onChange={setStartQuery} onSelect={(lat, lon) => setStartCoords({lat, lon})} isDeparture={true} />
+              <SearchInput placeholder="To Hall/Building" value={endQuery} onChange={setEndQuery} onSelect={(lat, lon) => setEndCoords({lat, lon})} />
             </div>
             {(uiState === 'search' || uiState === 'preview') && (
-              <button className="action-btn" onClick={handleSearch} disabled={routeLoading}>
-                {routeLoading ? "Recalculating..." : "Go"}
+              <button className="action-btn" onClick={() => handleSearch(true)} disabled={routeLoading}>
+                {routeLoading ? "Calculating..." : "Go"}
               </button>
             )}
           </div>
           {uiState === 'preview' && (
             <div className="ui-section">
-              <span className="section-title">Routes</span>
-              {routeError ? <div style={{color:'red', fontSize:'0.8rem'}}>{routeError}</div> : (
+              <span className="section-title">Path Options</span>
+              {routeLoading ? <div className="thank-you-msg">Optimizing Thermal Route...</div> : routeError ? <div style={{color:'red', fontSize:'0.8rem'}}>{routeError}</div> : (
                 routeData?.features.map(f => (
                   <div key={f.properties.type} className={`route-card ${activeRoute === f.properties.type ? 'active' : ''}`} onClick={() => setActiveRoute(f.properties.type)}>
                     <div className="header">
                       <span className="type">{f.properties.type === 'coolest' ? "Cooler" : "Efficient"}</span>
-                      {f.properties.type === 'coolest' && <span className="badge">Best Path</span>}
+                      {f.properties.type === 'coolest' && <span className="badge">Best Temp</span>}
                     </div>
                     <div className="time" style={{color: f.properties.type === 'coolest' ? 'var(--cool-blue)' : 'var(--warm-orange)'}}>{f.properties.time_mins} min</div>
                   </div>
                 ))
               )}
               {!routeLoading && routeData && <button className="action-btn" onClick={() => setUiState('nav')}>Start Walking</button>}
-              <button className="action-btn secondary" onClick={resetSearch}>Reset</button>
+              <button className="action-btn secondary" onClick={resetAll}>Reset</button>
             </div>
           )}
           {uiState === 'nav' && (

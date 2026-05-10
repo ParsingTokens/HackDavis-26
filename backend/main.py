@@ -86,8 +86,6 @@ def get_solar_pos(hours_offset=0):
 
 def get_shadow_offset(height, solar_alt, solar_az):
     if solar_alt <= 0: return 0, 0
-    # Shadow length L = h / tan(alt)
-    # Degrees to meters approx: 1m ~ 0.000009 deg
     shadow_length = height / math.tan(math.radians(max(1, solar_alt)))
     shadow_angle = math.radians((solar_az + 180) % 360)
     dx = shadow_length * math.sin(shadow_angle) * 0.000009
@@ -96,7 +94,6 @@ def get_shadow_offset(height, solar_alt, solar_az):
 
 def get_weather_data(hours_offset=0):
     try:
-        # Fetching Davis-specific weather
         url = f"https://api.open-meteo.com/v1/forecast?latitude={DAVIS_LAT}&longitude={DAVIS_LON}&current=temperature_2m,wind_speed_10m,wind_direction_10m&hourly=temperature_2m,wind_speed_10m,wind_direction_10m&temperature_unit=fahrenheit&forecast_days=2"
         res = requests.get(url, timeout=5)
         data = res.json()
@@ -117,8 +114,7 @@ def get_weather_data(hours_offset=0):
         return {"temperature_2m": 82, "wind_speed_10m": 4, "wind_direction_10m": 225}
 
 def calculate_convective_cooling(wind_speed):
-    # wind_speed in km/h. Factor reduces heat penalty.
-    return max(0.5, 1.0 - (wind_speed * 0.02))
+    return max(0.4, 1.0 - (wind_speed * 0.03))
 
 graph_cache = {}
 
@@ -145,15 +141,16 @@ def get_weighted_graph(hours_offset=0):
         if not geom:
             geom = LineString([Point(G_copy.nodes[u]['x'], G_copy.nodes[u]['y']), Point(G_copy.nodes[v]['x'], G_copy.nodes[v]['y'])])
         
-        # 1. AC Building Check (Major Bonus)
+        # 1. Hall / Building Cut-through Check (Huge Bonus during day)
         is_indoor = False
         if building_sindex:
-            nearby_b_idx = building_sindex.query(geom.centroid)
+            nearby_b_idx = building_sindex.query(geom.centroid.buffer(0.0001))
             if len(nearby_b_idx) > 0:
                 is_indoor = True
         
         if is_indoor:
-            data['weight'] = length * 0.1 # 90% discount for AC
+            # Halls are 95% faster in thermal terms (AC bonus)
+            data['weight'] = length * 0.05 
             data['exposure_ratio'] = 0
             continue
             
@@ -180,9 +177,7 @@ def get_weighted_graph(hours_offset=0):
         
         data['exposure_ratio'] = round(exposure, 2)
         
-        # Dijkstra Weight calculation: length * (base + thermal_penalty)
-        # Exposure 1.0 (full sun) -> Penalty 50.0 (Aggressive)
-        # Exposure 0.0 (full shade) -> Penalty 0.0
+        # Thermal Penalty: Increased significantly (50x) to ensure path divergence
         thermal_penalty = (exposure * 50.0) * wind_cooling
         data['weight'] = length * (1.0 + thermal_penalty)
         
@@ -219,7 +214,7 @@ def build_geojson(graph, path, r_type, color):
             dist_on_street = l
         else: dist_on_street += l
         
-    instructions.append(f"Reach destination via {curr_street}")
+    instructions.append(f"Arrive via {curr_street}")
     
     return {
         "type": "Feature",
@@ -311,5 +306,4 @@ def pois_api():
 
 @app.post("/report_spot")
 def report_api(spot: CommunitySpot):
-    # Log locally for simulation
     return {"status": "success"}
