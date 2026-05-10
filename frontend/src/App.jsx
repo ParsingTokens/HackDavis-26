@@ -5,7 +5,6 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { GeoJsonLayer, ColumnLayer } from '@deck.gl/layers';
 import { TripsLayer } from '@deck.gl/geo-layers';
-import { WebMercatorViewport } from '@deck.gl/core';
 
 const INIT_VS = { longitude: -121.7495, latitude: 38.5397, zoom: 16, pitch: 45, bearing: 0, transitionDuration: 300 };
 const THEMES = {
@@ -20,7 +19,6 @@ const treeColor = (n) => {
   return [30, 90, 30];
 };
 
-// VIVID SUN STREAMS
 const makeSunTrips = (az, alt) => {
   if (alt <= 0) return [];
   const rays = [];
@@ -38,25 +36,19 @@ const makeSunTrips = (az, alt) => {
   return rays;
 };
 
-// CRESCENT WIND PARTICLES (Wining crescents)
 const makeWindTrips = (dir) => {
   if (dir === undefined) return [];
   const rays = [];
   const rad = (dir - 180) * Math.PI / 180;
-  // Wind vector
   const vx = 0.0012 * Math.sin(rad), vy = 0.0012 * Math.cos(rad);
-  // Perpendicular for crescent curve
   const px = -vy * 0.4, py = vx * 0.4;
-  
   for (let i = 0; i < 300; i++) {
     const lat = 38.50 + Math.random() * 0.08, lon = -121.79 + Math.random() * 0.08;
     const z = 8 + Math.random() * 40;
     const path = [];
-    // 3-point crescent shape
     path.push([lon, lat, z]);
     path.push([lon + vx * 0.5 + px, lat + vy * 0.5 + py, z]);
     path.push([lon + vx, lat + vy, z]);
-    
     const off = Math.random() * 10000;
     rays.push({ path, ts: path.map((_, idx) => off + idx * 500) });
   }
@@ -85,11 +77,19 @@ function SearchInput({ placeholder, value, onChange, onSelect, pois, isDeparture
   );
 }
 
+function Compass({ bearing }) {
+  return (
+    <div className="compass" style={{ transform: `rotate(${-bearing}deg)` }}>
+      <div className="compass-ring"><span className="compass-n">N</span><span className="compass-e">E</span><span className="compass-s">S</span><span className="compass-w">W</span><div className="compass-needle" /></div>
+    </div>
+  );
+}
+
 export default function App() {
   const [vs, setVs] = useState(INIT_VS);
   const [ui, setUi] = useState('search');
   const [timeOff, setTimeOff] = useState(0);
-  const [tintMode, setTintMode] = useState(true);
+  const [tintMode, setTintMode] = useState(false); // Tint disabled by default
   const [theme, setTheme] = useState('dark');
   const [sq, setSq] = useState(''); const [sc, setSc] = useState(null);
   const [eq, setEq] = useState(''); const [ec, setEc] = useState(null);
@@ -134,8 +134,8 @@ export default function App() {
   const layers = [
     bldg && new GeoJsonLayer({
       id: 'bldg', data: bldg, extruded: true, getElevation: d => d.properties?.height || 10,
-      getFillColor: theme === 'dark' ? [20, 30, 50, 255] : [100, 110, 130, 255],
-      opacity: tintMode ? 0.2 : 1, material: { ambient: 0.8, diffuse: 0.2 }
+      getFillColor: theme === 'dark' ? [20, 30, 50, 255] : [120, 130, 150, 255],
+      opacity: tintMode ? 0.3 : 1, material: { ambient: 0.8, diffuse: 0.2 }
     }),
     trees?.features && [
       new ColumnLayer({ id: 'tr', data: trees.features, getPosition: d => d.geometry.coordinates, getFillColor: [60, 40, 20], radius: 0.5, extruded: true, getElevation: 3 }),
@@ -143,20 +143,26 @@ export default function App() {
     ],
     rd?.features.map(f => {
       const a = activeRoute === f.properties.type;
+      // BRIGHT paths in tint mode
+      const coolColor = tintMode ? [0, 255, 255, a ? 255 : 120] : [0, 150, 220, a ? 255 : 120];
+      const effColor = tintMode ? [255, 220, 0, a ? 255 : 120] : [255, 120, 0, a ? 255 : 120];
       return new GeoJsonLayer({
         id: `r-${f.properties.type}`, data: f, lineWidthUnits: 'pixels',
-        getLineColor: f.properties.type === 'coolest' ? [0, 200, 255, a ? 255 : 120] : [255, 150, 0, a ? 255 : 120],
+        getLineColor: f.properties.type === 'coolest' ? coolColor : effColor,
         getLineWidth: a ? 14 : 7, parameters: { depthTest: false }
       });
     }),
     sun.alt > 0 && new TripsLayer({
       id: 'sun', data: sunTrips, getPath: d => d.path, getTimestamps: d => d.ts,
-      getColor: [255, 245, 180, 255], widthMinPixels: 4, trailLength: 6000, currentTime: tick, parameters: { depthTest: false }
+      // VIBRANT YELLOW in tint mode
+      getColor: tintMode ? [255, 255, 100, 255] : [255, 240, 150, 200], 
+      widthMinPixels: tintMode ? 6 : 4, trailLength: 6000, currentTime: tick, parameters: { depthTest: false }
     }),
     new TripsLayer({
       id: 'wind', data: windTrips, getPath: d => d.path, getTimestamps: d => d.ts,
-      // WHITER/GRAYER WIND
-      getColor: [240, 240, 240, 220], widthMinPixels: 3, trailLength: 2500, currentTime: tick, parameters: { depthTest: false }
+      // PURE WHITE in tint mode
+      getColor: tintMode ? [255, 255, 255, 255] : [240, 240, 240, 200], 
+      widthMinPixels: tintMode ? 4 : 3, trailLength: 2500, currentTime: tick, parameters: { depthTest: false }
     })
   ].flat().filter(Boolean);
 

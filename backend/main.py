@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from skyfield.api import load
 import geopandas as gpd
 from shapely.strtree import STRtree
+from scipy.spatial import cKDTree
 
 DAVIS_LAT, DAVIS_LON = 38.5397, -121.7495
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -27,13 +28,15 @@ earth, sun_body = planets['earth'], planets['sun']
 from skyfield.toposlib import wgs84
 observer = earth + wgs84.latlon(DAVIS_LAT, DAVIS_LON)
 
+_edge_cx = []
+_edge_cy = []
 _edge_ids = []
 _edge_lengths = []
 _edge_is_indoor = []
 _edge_tree_lookups = []
-_edge_centroids_x = []
-_edge_centroids_y = []
-_tree_data = [] # stores (x, y, height)
+_trees_list = []
+_kdtree = None
+_node_ids = []
 
 _graph_cache = {}
 _weather_cache = {}
@@ -57,35 +60,44 @@ def load_data():
         print(f"Load error: {e}")
 
 def _precompute():
-    global _edge_ids, _edge_lengths, _edge_is_indoor, _edge_tree_lookups, _edge_centroids_x, _edge_centroids_y, _tree_data
-    _edge_ids, _edge_lengths, _edge_is_indoor, _edge_tree_lookups = [], [], [], []
-    _edge_centroids_x, _edge_centroids_y = [], []
+    global _edge_cx, _edge_cy, _edge_ids, _edge_lengths, _edge_is_indoor, _edge_tree_lookups, _trees_list, _kdtree, _node_ids
+    _edge_cx, _edge_cy, _edge_ids, _edge_lengths, _edge_is_indoor, _edge_tree_lookups = [], [], [], [], [], []
     
-    # Pre-extract tree data to avoid slow Pandas access at runtime
-    _tree_data = []
+    # Precompute fast tree array to avoid slow pandas lookups
+    _trees_list = []
     if trees_df is not None:
-        for idx in range(len(trees_df)):
-            geom = trees_df.geometry.iloc[idx]
-            h = trees_df['height_m'].iloc[idx] if 'height_m' in trees_df.columns else 8
-            if math.isnan(h): h = 8
-            _tree_data.append((geom.centroid.x, geom.centroid.y, h))
-            
+        for i in range(len(trees_df)):
+            t = trees_df.iloc[i]
+            _trees_list.append({
+                'h': t.get('height_m', 8),
+                'cx': t.geometry.centroid.x,
+                'cy': t.geometry.centroid.y
+            })
+
     for u, v, k, data in G.edges(keys=True, data=True):
         eid = (u, v, k)
         geom = data.get('geometry')
         if not geom:
             geom = LineString([Point(G.nodes[u]['x'], G.nodes[u]['y']), Point(G.nodes[v]['x'], G.nodes[v]['y'])])
-            
-        cx, cy = geom.centroid.x, geom.centroid.y
-        _edge_centroids_x.append(cx)
-        _edge_centroids_y.append(cy)
+        
+        c = geom.centroid
+        _edge_cx.append(c.x)
+        _edge_cy.append(c.y)
         _edge_ids.append(eid)
         _edge_lengths.append(data.get('length', 1.0))
         
         indoor = False
-        if building_sindex and len(building_sindex.query(geom.centroid.buffer(0.0001))) > 0: indoor = True
+        if building_sindex and len(building_sindex.query(c.buffer(0.0001))) > 0: indoor = True
         _edge_is_indoor.append(indoor)
         _edge_tree_lookups.append(list(tree_sindex.query(geom.buffer(0.0003))) if tree_sindex else [])
+
+    # Fast KDTree for nearest node queries
+    node_coords = []
+    _node_ids = []
+    for node, data in G.nodes(data=True):
+        node_coords.append((data['x'], data['y']))
+        _node_ids.append(node)
+    _kdtree = cKDTree(node_coords)
 
 load_data()
 
@@ -126,7 +138,6 @@ def get_weather(hours_offset=0):
 def get_weighted_graph(hours_offset=0):
     key = round(hours_offset * 2) / 2
     if key in _graph_cache: return _graph_cache[key]
-    
     alt, az, _ = get_solar_pos(hours_offset)
     w = get_weather(hours_offset)
     wind_factor = max(0.4, 1.0 - (w["wind_speed"] * 0.03))
@@ -135,36 +146,29 @@ def get_weighted_graph(hours_offset=0):
     weights, exposures = {}, {}
     for i in range(len(_edge_ids)):
         eid, length = _edge_ids[i], _edge_lengths[i]
+        if night: weights[eid], exposures[eid] = length, 0; continue
+        if _edge_is_indoor[i]: weights[eid], exposures[eid] = length * 0.05, 0; continue # Huge indoor bonus (95% reduction)
         
-        if night: 
-            weights[eid], exposures[eid] = length, 0
-            continue
-            
-        if _edge_is_indoor[i]: 
-            # Very strong bonus for buildings (equivalent to treating them as 1/10th the distance)
-            weights[eid], exposures[eid] = length * 0.1, 0
-            continue
-            
         exp = 1.0
         tidx = _edge_tree_lookups[i]
         if tidx:
-            ex, ey = _edge_centroids_x[i], _edge_centroids_y[i]
+            cx, cy = _edge_cx[i], _edge_cy[i]
             shadow_hit = False
             for ti in tidx:
-                tx, ty, th = _tree_data[ti]
-                dx, dy = _shadow_offset(th, alt, az)
-                dist_sq = (ex - (tx + dx))**2 + (ey - (ty + dy))**2
-                if dist_sq < 1e-8: # ~0.0001^2
-                    shadow_hit = True
-                    break
+                t = _trees_list[ti]
+                dx, dy = _shadow_offset(t['h'], alt, az)
+                # Fast distance check avoiding shapely Point creation
+                if math.hypot(cx - (t['cx'] + dx), cy - (t['cy'] + dy)) < 0.0001:
+                    shadow_hit = True; break
             exp = 0.15 if shadow_hit else 1.0
-            
         exposures[eid] = exp
         
-        # Reduced penalty: A max penalty of 6x distance for fully exposed paths.
-        # This heavily prioritizes efficiency and stops ridiculous U-turns, while still seeking shade.
-        weights[eid] = length * (1.0 + exp * 6.0 * wind_factor)
+        # Reduced penalty from 25x to 8x. Still prioritizes shade but prevents dumb U-turns
+        # Distance efficiency matters more now.
+        weights[eid] = length * (1.0 + exp * 8.0 * wind_factor)
         
+    # Apply dynamically as a dictionary lookup to avoid G.copy() cost
+    # Actually, G.copy() is fast enough if run once per time_offset, and caching prevents re-computation.
     G_c = G.copy()
     for eid, weight in weights.items():
         G_c.edges[eid]['weight'] = weight
@@ -174,16 +178,16 @@ def get_weighted_graph(hours_offset=0):
 
 @app.get("/route")
 def route_api(start_lat: float, start_lon: float, end_lat: float, end_lon: float, time_offset: float = 0):
-    if not G: return {"error": "Loading..."}
+    if not G or _kdtree is None: return {"error": "Loading..."}
     t0 = _time.time()
     Gw = get_weighted_graph(time_offset)
     try:
-        o = ox.distance.nearest_nodes(Gw, start_lon, start_lat)
-        d = ox.distance.nearest_nodes(Gw, end_lon, end_lat)
+        # Fast KDTree lookup
+        _, o_idx = _kdtree.query((start_lon, start_lat))
+        _, d_idx = _kdtree.query((end_lon, end_lat))
+        o, d = _node_ids[o_idx], _node_ids[d_idx]
         
-        fp = nx.shortest_path(Gw, o, d, weight='length')
-        cp = nx.shortest_path(Gw, o, d, weight='weight')
-        
+        fp = nx.shortest_path(Gw, o, d, weight='length'); cp = nx.shortest_path(Gw, o, d, weight='weight')
         def build_gj(path, rtype, color):
             coords, tl, te = [], 0, 0
             for u, v in zip(path[:-1], path[1:]):
@@ -192,11 +196,10 @@ def route_api(start_lat: float, start_lon: float, end_lat: float, end_lon: float
                 coords.extend(list(g.coords) if not coords else list(g.coords)[1:])
                 l = e.get('length', 0); tl += l; te += e.get('exposure_ratio', 1) * l
             return {"type": "Feature", "properties": {"type": rtype, "time_mins": max(1, int(tl/80)), "exposure": round(te/tl, 2) if tl>0 else 1, "color": color}, "geometry": {"type": "LineString", "coordinates": coords}}
-            
-        res = {"features": [build_gj(fp, 'fastest', '#f59e0b'), build_gj(cp, 'coolest', '#0ea5e9')], "weather": get_weather(time_offset), "sun": get_solar_pos(time_offset), "time_ms": int((_time.time() - t0)*1000)}
+        
+        res = {"features": [build_gj(fp, 'fastest', '#f59e0b'), build_gj(cp, 'coolest', '#0ea5e9')], "weather": get_weather(time_offset), "sun": get_solar_pos(time_offset), "perf_ms": int((_time.time()-t0)*1000)}
         return res
-    except Exception as e: 
-        return {"error": str(e)}
+    except Exception as e: return {"error": str(e)}
 
 @app.get("/sun_position")
 def sun_api(hours_offset: float = 0):
