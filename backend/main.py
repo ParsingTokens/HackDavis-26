@@ -85,14 +85,28 @@ def get_shadow_offset(height, solar_alt, solar_az):
     dy = shadow_length * math.cos(shadow_angle) * 0.000009
     return dx, dy
 
-def get_weather_data():
-    """Fetch current weather including wind."""
+def get_weather_data(hours_offset=0):
+    """Fetch forecasted weather including wind for a specific offset."""
     try:
-        url = f"https://api.open-meteo.com/v1/forecast?latitude={DAVIS_LAT}&longitude={DAVIS_LON}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m&temperature_unit=fahrenheit"
+        # Fetch 24-hour hourly forecast
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={DAVIS_LAT}&longitude={DAVIS_LON}&hourly=temperature_2m,wind_speed_10m,wind_direction_10m&temperature_unit=fahrenheit&forecast_days=2"
         res = requests.get(url, timeout=5)
         data = res.json()
-        return data.get('current', {})
-    except:
+        
+        # Find index for requested hour
+        target_time = datetime.now(timezone.utc) + timedelta(hours=hours_offset)
+        times = data['hourly']['time']
+        
+        # Simple index matching (API returns hourly)
+        target_idx = min(int(hours_offset), len(times) - 1)
+        
+        return {
+            "temperature_2m": data['hourly']['temperature_2m'][target_idx],
+            "wind_speed_10m": data['hourly']['wind_speed_10m'][target_idx],
+            "wind_direction_10m": data['hourly']['wind_direction_10m'][target_idx]
+        }
+    except Exception as e:
+        print(f"Weather error: {e}")
         return {"temperature_2m": 85, "wind_speed_10m": 5, "wind_direction_10m": 180}
 
 def calculate_convective_cooling(wind_speed):
@@ -246,25 +260,45 @@ def get_route(start_lat: float, start_lon: float, end_lat: float, end_lon: float
         c_exp = coolest_feature['properties'].get('exposure_ratio', 1.0)
         if f_exp > 0:
             sunlight_saved = int(max(0, (1.0 - (c_exp / f_exp)) * 100))
-        elif c_exp == 0 and f_exp == 0:
-            sunlight_saved = 0
 
+    # Real-time or forecasted weather for response
+    weather = get_weather_data(time_offset)
+    alt, az, uv = get_solar_pos(time_offset)
+    
     # Departure Recommendation Logic
     recommendations = []
     best_score = float('inf')
     best_offset = 0
     
-    # Check current, +15m, +30m, +45m, +60m
-    for offset in [0, 0.25, 0.5, 0.75, 1.0]:
-        offset_G = get_weighted_graph(offset)
-        try:
-            o = ox.distance.nearest_nodes(offset_G, start_lon, start_lat)
-            d = ox.distance.nearest_nodes(offset_G, end_lon, end_lat)
-            p = nx.shortest_path_length(offset_G, o, d, weight='weight')
-            if p < best_score:
-                best_score = p
-                best_offset = offset
-        except: continue
+    # Check next hour in 15m increments
+    for offset in [15, 30, 45, 60]:
+        future_alt, future_az, future_uv = get_solar_pos(time_offset + (offset / 60.0))
+        # Simple heuristic: less UV/alt is better
+        score = future_uv + (future_alt if future_alt > 0 else 0)
+        if score < best_score:
+            best_score = score
+            best_offset = offset
+            
+    recommendation = {
+        "is_now": best_offset == 0,
+        "offset_minutes": best_offset,
+        "label": f"Leave in {best_offset} mins" if best_offset > 0 else "Leave now"
+    }
+
+    return {
+        "type": "FeatureCollection",
+        "features": [f for f in [fastest_feature, coolest_feature] if f],
+        "sunlight_saved": max(0, sunlight_saved),
+        "uv_index": uv,
+        "solar_alt": alt,
+        "solar_az": az,
+        "recommendation": recommendation,
+        "weather": {
+            "temp": weather.get('temperature_2m', 85),
+            "wind_speed": weather.get('wind_speed_10m', 5),
+            "wind_dir": weather.get('wind_direction_10m', 180)
+        }
+    }
         
     alt, az, uv = get_solar_pos(time_offset)
     weather = get_weather_data()
@@ -274,12 +308,10 @@ def get_route(start_lat: float, start_lon: float, end_lat: float, end_lon: float
         "features": [f for f in [fastest_feature, coolest_feature] if f],
         "sunlight_saved": max(0, sunlight_saved),
         "uv_index": uv,
-        "weather": {
-            "temperature_2m": weather.get("temperature_2m", 82),
-            "wind_speed_10m": weather.get("wind_speed_10m", 5),
-            "wind_direction_10m": weather.get("wind_direction_10m", 225)
+        "wind": {
+            "speed": weather.get("wind_speed_10m"),
+            "direction": weather.get("wind_direction_10m")
         },
-        "solar": {"altitude": alt, "azimuth": az},
         "recommendation": {
             "offset_minutes": int(best_offset * 60),
             "is_now": best_offset == 0

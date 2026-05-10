@@ -31,7 +31,6 @@ body {
   width: 100vw;
   height: 100vh;
   display: flex;
-  flex-direction: row;
 }
 
 .map-container {
@@ -50,7 +49,6 @@ body {
   flex-direction: column;
   box-shadow: var(--shadow-lg);
   border-right: 1px solid rgba(0,0,0,0.05);
-  transition: width 0.3s ease;
 }
 
 .sidebar-header {
@@ -221,51 +219,41 @@ body {
 .time-slider {
   width: 100%;
   accent-color: var(--primary-accent);
+  margin-top: 8px;
 }
 
-/* Overlay Elements - FIXED SPACING */
+/* Overlay Elements */
 .weather-container {
   position: absolute;
-  bottom: 40px; /* More space from bottom */
+  bottom: 30px;
   right: 20px;
   display: flex;
-  flex-direction: column; /* Stack on mobile, row on desktop */
-  gap: 12px;
+  flex-direction: column;
+  gap: 10px;
   z-index: 50;
 }
 
 .weather-card {
   background: var(--glass-bg);
   backdrop-filter: blur(12px);
-  padding: 12px 16px;
-  border-radius: 14px;
+  padding: 10px 14px;
+  border-radius: 12px;
   box-shadow: var(--shadow-lg);
   border: 1px solid var(--glass-border);
-  min-width: 120px;
+  min-width: 100px;
 }
 
 .weather-card .label {
-  font-size: 0.65rem;
+  font-size: 0.6rem;
   font-weight: 700;
   color: var(--text-secondary);
   text-transform: uppercase;
 }
 
 .weather-card .value {
-  font-size: 1rem;
+  font-size: 0.9rem;
   font-weight: 700;
   margin-top: 2px;
-}
-
-/* Map Credits Styling */
-.map-container .maplibregl-ctrl-bottom-right {
-  bottom: 10px !important;
-  right: 10px !important;
-}
-
-.maplibregl-ctrl-attrib {
-  background: rgba(255,255,255,0.5) !important;
-  border-radius: 4px !important;
 }
 
 /* Mobile Responsiveness */
@@ -276,33 +264,24 @@ body {
   
   .sidebar {
     width: 100%;
-    height: 40vh;
+    height: 45vh;
     border-right: none;
     border-top: 1px solid rgba(0,0,0,0.05);
   }
   
   .map-container {
-    height: 60vh;
+    height: 55vh;
   }
   
   .weather-container {
     bottom: 20px;
     right: 10px;
-    flex-direction: row; /* Row on mobile bottom */
-    font-size: 0.8rem;
+    flex-direction: row;
   }
   
   .weather-card {
-    padding: 8px 12px;
+    padding: 8px 10px;
     min-width: 80px;
-  }
-  
-  .sidebar-header {
-    padding: 12px 20px;
-  }
-  
-  .sidebar-header h1 {
-    font-size: 1.2rem;
   }
 }
 
@@ -330,22 +309,6 @@ body {
 
 .autocomplete-item:hover {
   background: #f8fafc;
-}
-
-/* Navigation Instructions */
-.instructions-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.instruction-item {
-  padding: 12px;
-  background: #f8fafc;
-  border-radius: 10px;
-  font-size: 0.85rem;
-  line-height: 1.4;
-  border-left: 3px solid var(--primary-accent);
 }
 
 /* Community Section */
