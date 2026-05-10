@@ -1,0 +1,297 @@
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import DeckGL from '@deck.gl/react';
+import Map from 'react-map-gl/maplibre';
+import maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
+import { GeoJsonLayer, ColumnLayer, TextLayer, PolygonLayer } from '@deck.gl/layers';
+import { TripsLayer } from '@deck.gl/geo-layers';
+
+const INIT_VS = { longitude: -121.7495, latitude: 38.5397, zoom: 16, pitch: 45, bearing: 0, transitionDuration: 300 };
+const THEMES = {
+  light: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
+  dark: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
+};
+
+const treeColor = (n) => {
+  if (!n) return [40, 100, 40];
+  const l = n.toLowerCase();
+  if (l.includes('oak')) return [20, 70, 20];
+  return [30, 90, 30];
+};
+
+const makeSunTrips = (az, alt) => {
+  if (alt <= 0) return [];
+  const rays = [];
+  const radDir = (az + 180) * Math.PI / 180;
+  const dx = 0.0008 * Math.sin(radDir), dy = 0.0008 * Math.cos(radDir);
+  const drop = 60 * (alt / 90 + 0.1);
+  for (let i = 0; i < 400; i++) {
+    const lat = 38.51 + Math.random() * 0.06, lon = -121.78 + Math.random() * 0.06;
+    const sz = 200 + Math.random() * 200;
+    const path = [];
+    for (let j = 0; j < 15; j++) path.push([lon + dx*j, lat + dy*j, sz - drop*j]);
+    const off = Math.random() * 10000;
+    rays.push({ path, ts: path.map((_, idx) => off + idx * 400) });
+  }
+  return rays;
+};
+
+const makeWindTrips = (dir) => {
+  if (dir === undefined) return [];
+  const rays = [];
+  const rad = (dir - 180) * Math.PI / 180;
+  const vx = 0.0012 * Math.sin(rad), vy = 0.0012 * Math.cos(rad);
+  const px = -vy * 0.4, py = vx * 0.4;
+  for (let i = 0; i < 300; i++) {
+    const lat = 38.50 + Math.random() * 0.08, lon = -121.79 + Math.random() * 0.08;
+    const z = 8 + Math.random() * 40;
+    const path = [];
+    path.push([lon, lat, z]);
+    path.push([lon + vx * 0.5 + px, lat + vy * 0.5 + py, z]);
+    path.push([lon + vx, lat + vy, z]);
+    const off = Math.random() * 10000;
+    rays.push({ path, ts: path.map((_, idx) => off + idx * 500) });
+  }
+  return rays;
+};
+
+function SearchInput({ placeholder, value, onChange, onSelect, pois, isDeparture }) {
+  const [results, setResults] = useState([]);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (value.length > 0 && open && value !== 'Current Location') {
+      const v = value.toLowerCase();
+      setResults(pois.filter(p => p.name.toLowerCase().includes(v)).slice(0, 10));
+    } else { setResults([]); }
+  }, [value, open, pois]);
+  return (
+    <div className="search-input-wrapper">
+      <input type="text" placeholder={placeholder} value={value} onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 200)} onChange={e => { onChange(e.target.value); setOpen(true); }} />
+      {isDeparture && <button className="current-loc-btn" onClick={() => { navigator.geolocation?.getCurrentPosition(p => { onChange('Current Location'); onSelect(p.coords.latitude, p.coords.longitude); }, null, { enableHighAccuracy: true }); }}>Nearby</button>}
+      {open && results.length > 0 && (
+        <div className="autocomplete-dropdown" style={{display:'block'}}>
+          {results.map((r, i) => <div key={i} className="autocomplete-item" onMouseDown={e => { e.preventDefault(); onChange(r.name); onSelect(r.lat, r.lon); setOpen(false); }}>{r.name}</div>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Compass({ bearing }) {
+  return (
+    <div className="compass" style={{ transform: `rotate(${-bearing}deg)` }}>
+      <div className="compass-ring"><span className="compass-n">N</span><span className="compass-e">E</span><span className="compass-s">S</span><span className="compass-w">W</span><div className="compass-needle" /></div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [vs, setVs] = useState(INIT_VS);
+  const [ui, setUi] = useState('search');
+  const [activeTab, setActiveTab] = useState('nav');
+  const [timeOff, setTimeOff] = useState(0);
+  const [tintMode, setTintMode] = useState(false);
+  const [theme, setTheme] = useState('dark');
+  const [sq, setSq] = useState(''); const [sc, setSc] = useState(null);
+  const [eq, setEq] = useState(''); const [ec, setEc] = useState(null);
+  const [rd, setRd] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+  const [activeRoute, setActiveRoute] = useState('coolest');
+  const [trees, setTrees] = useState(null);
+  const [bldg, setBldg] = useState(null);
+  const [weather, setWeather] = useState(null);
+  const [sun, setSun] = useState({ alt: -20, az: 0 });
+  const [tick, setTick] = useState(0);
+  const [pois, setPois] = useState([]);
+  const [communitySpots, setCommunitySpots] = useState([]);
+  const [newReqName, setNewReqName] = useState('');
+  const [newReqDesc, setNewReqDesc] = useState('');
+
+  useEffect(() => {
+    // Ported from our high-performance Cesium tree engine
+    const bbox = "-121.765,38.530,-121.735,38.550";
+    const treesUrl = `https://gis.ucdavis.edu/server/rest/services/UC_Davis_Tree_Database_2020B/MapServer/0/query?where=1%3D1&geometry=${bbox}&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=Height_ft,CommonName&returnGeometry=true&resultRecordCount=3000&f=geojson`;
+    fetch(treesUrl).then(r => r.json()).then(data => {
+      // Pre-process heights and radii based on our previous logic
+      if (data && data.features) {
+        data.features.forEach(f => {
+          const heightStr = f.properties.Height_ft || "16 - 33 Feet";
+          let hm = 8;
+          if (heightStr.includes('< 16')) hm = 4;
+          else if (heightStr.includes('16 - 33')) hm = 8;
+          else if (heightStr.includes('34 - 50')) hm = 13;
+          else if (heightStr.includes('51 - 66')) hm = 18;
+          else if (heightStr.includes('67 - 85')) hm = 23;
+          else if (heightStr.includes('> 85')) hm = 28;
+          
+          f.properties.calcHeight = hm;
+          f.properties.calcRadius = Math.min(hm * 0.18, 3.0);
+        });
+      }
+      setTrees(data);
+    });
+    fetch('http://localhost:8000/buildings').then(r => r.json()).then(setBldg);
+    fetch('http://localhost:8000/pois').then(r => r.json()).then(d => setPois(Array.isArray(d) ? d : []));
+    fetch('http://localhost:8000/community_spots').then(r => r.json()).then(d => {
+      // Force 0 upvotes for all as requested
+      const spots = (d.features || []).map(s => ({...s, properties: {...s.properties, votes: 0}}));
+      setCommunitySpots(spots);
+    });
+    const a = () => { setTick(t => (t + 25) % 15000); requestAnimationFrame(a); };
+    const id = requestAnimationFrame(a);
+    return () => cancelAnimationFrame(id);
+  }, []);
+
+  const doRoute = useCallback(() => {
+    if (!sc || !ec) return;
+    setLoading(true); setErr(null);
+    fetch(`http://localhost:8000/route?start_lat=${sc.lat}&start_lon=${sc.lon}&end_lat=${ec.lat}&end_lon=${ec.lon}&time_offset=${timeOff}`)
+      .then(r => r.json()).then(d => {
+        setLoading(false);
+        if (d.error) setErr(d.error); else { setRd(d); setWeather(d.weather); setUi('preview'); setActiveTab('nav'); }
+      }).catch(() => { setLoading(false); setErr('Connection failed.'); });
+  }, [sc, ec, timeOff]);
+
+  useEffect(() => {
+    fetch(`http://localhost:8000/sun_position?hours_offset=${timeOff}`).then(r => r.json()).then(d => { setSun({ alt: d.altitude, az: d.azimuth }); setTheme(d.altitude > 0 ? 'light' : 'dark'); });
+    fetch(`http://localhost:8000/weather?hours_offset=${timeOff}`).then(r => r.json()).then(setWeather);
+  }, [timeOff]);
+
+  const handleRequestSpot = () => {
+    if (!newReqName) return;
+    const n = { type: 'Feature', properties: { name: newReqName, description: newReqDesc, votes: 0 }, geometry: { type: 'Point', coordinates: [vs.longitude, vs.latitude] } };
+    setCommunitySpots([n, ...communitySpots]);
+    setNewReqName(''); setNewReqDesc('');
+  };
+
+  const sunTrips = useMemo(() => makeSunTrips(sun.az, sun.alt), [sun.az, sun.alt]);
+  const windTrips = useMemo(() => makeWindTrips(weather?.wind_dir), [weather?.wind_dir]);
+
+  const layers = [
+    // Dimming overlay layer below everything else
+    tintMode && new PolygonLayer({
+      id: 'dim-overlay',
+      data: [{ polygon: [[-180, 90], [180, 90], [180, -90], [-180, -90], [-180, 90]] }],
+      getPolygon: d => d.polygon,
+      getFillColor: [5, 10, 25, 200],
+      parameters: { depthTest: false }
+    }),
+    bldg && new GeoJsonLayer({
+      id: 'bldg', data: bldg, extruded: true, getElevation: d => d.properties?.height || 10,
+      getFillColor: theme === 'dark' ? [20, 30, 50, 255] : [120, 130, 150, 255],
+      opacity: tintMode ? 0.3 : 1, material: { ambient: 0.8, diffuse: 0.2 }
+    }),
+    trees?.features && [
+      new ColumnLayer({ id: 'tr', data: trees.features, getPosition: d => d.geometry.coordinates, getFillColor: [60, 40, 20], radius: d => d.properties.calcRadius * 0.4, extruded: true, getElevation: d => d.properties.calcHeight * 0.3 }),
+      new ColumnLayer({ id: 'cy', data: trees.features, getPosition: d => d.geometry.coordinates, getFillColor: [56, 142, 60, 240], radius: d => d.properties.calcRadius, extruded: true, getElevation: d => d.properties.calcHeight, opacity: tintMode ? 0.3 : 1 })
+    ],
+    rd?.features && rd.features.map(f => {
+      const a = activeRoute === f.properties.type;
+      const coolColor = tintMode ? [0, 255, 255, a ? 255 : 120] : [0, 150, 220, a ? 255 : 120];
+      const effColor = tintMode ? [255, 220, 0, a ? 255 : 120] : [255, 120, 0, a ? 255 : 120];
+      return new GeoJsonLayer({
+        id: `r-${f.properties.type}`, data: f, lineWidthUnits: 'pixels',
+        getLineColor: f.properties.type === 'coolest' ? coolColor : effColor,
+        getLineWidth: a ? 14 : 7, parameters: { depthTest: false }
+      });
+    }),
+    sun.alt > 0 && new TripsLayer({
+      id: 'sun', data: sunTrips, getPath: d => d.path, getTimestamps: d => d.ts,
+      getColor: tintMode ? [255, 255, 100, 255] : [255, 240, 150, 200], 
+      widthMinPixels: tintMode ? 6 : 4, trailLength: 6000, currentTime: tick, parameters: { depthTest: false }
+    }),
+    new TripsLayer({
+      id: 'wind', data: windTrips, getPath: d => d.path, getTimestamps: d => d.ts,
+      getColor: tintMode ? [255, 255, 255, 255] : [240, 240, 240, 200], 
+      widthMinPixels: tintMode ? 4 : 3, trailLength: 2500, currentTime: tick, parameters: { depthTest: false }
+    }),
+    // Actual pins using TextLayer with emoji
+    communitySpots.length > 0 && new TextLayer({
+      id: 'community-pins-text', data: communitySpots, getPosition: d => d.geometry.coordinates,
+      getText: d => '📍', getSize: 40, getColor: [255, 50, 50, 255], getAlignmentBaseline: 'bottom', pickable: true
+    })
+  ].flat().filter(Boolean);
+
+  const clock = (off) => { const d = new Date(); d.setHours(d.getHours() + off); return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); };
+
+  return (
+    <>
+      <div className="sidebar">
+        <div className="sidebar-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h1>Canopy</h1>
+        </div>
+        <div style={{ display: 'flex', padding: '0 20px', gap: '10px', marginBottom: '10px' }}>
+          <button onClick={() => setActiveTab('nav')} style={{ flex: 1, padding: '8px', background: activeTab === 'nav' ? 'var(--primary-accent)' : 'transparent', color: activeTab === 'nav' ? '#fff' : 'var(--text-main)', border: '1px solid var(--primary-accent)', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Navigation</button>
+          <button onClick={() => setActiveTab('community')} style={{ flex: 1, padding: '8px', background: activeTab === 'community' ? 'var(--cool-blue)' : 'transparent', color: activeTab === 'community' ? '#fff' : 'var(--text-main)', border: '1px solid var(--cool-blue)', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Community</button>
+        </div>
+        <div className="sidebar-content">
+          {activeTab === 'nav' ? (
+            <>
+              <div className="ui-section">
+                <span className="section-title">Schedule</span>
+                <div className="input-group" style={{flexDirection:'row', alignItems:'center', gap:'12px'}}>
+                  <input type="number" value={timeOff} onChange={e => setTimeOff(parseFloat(e.target.value))} 
+                    style={{width:'80px', padding:'12px', fontSize:'1.2rem', fontWeight:800, borderRadius:'10px', border:'2px solid var(--primary-accent)'}} />
+                  <span style={{fontWeight:700}}>Hours ahead</span>
+                </div>
+                <div style={{marginTop:'12px', fontSize:'1rem', color:'var(--primary-accent)', fontWeight:800}}>Forecast: {clock(timeOff)}</div>
+                <button className={`action-btn secondary ${tintMode ? 'active' : ''}`} onClick={() => setTintMode(!tintMode)} style={{marginTop:'15px'}}>
+                  {tintMode ? 'Visual Tint: ON' : 'Visual Tint: OFF'}
+                </button>
+              </div>
+              <div className="ui-section">
+                <span className="section-title">Navigation</span>
+                <SearchInput placeholder="From Building" value={sq} onChange={setSq} onSelect={(lat, lon) => setSc({ lat, lon })} pois={pois} isDeparture />
+                <SearchInput placeholder="To Building" value={eq} onChange={setEq} onSelect={(lat, lon) => setEc({ lat, lon })} pois={pois} />
+                <button className="action-btn" onClick={doRoute} disabled={loading} style={{marginTop:'12px'}}>{loading ? 'Calculating...' : 'Go'}</button>
+              </div>
+              {ui === 'preview' && rd && (
+                <div className="ui-section">
+                  {rd.features.map(f => (
+                    <div key={f.properties.type} className={`route-card ${activeRoute === f.properties.type ? 'active' : ''}`} onClick={() => setActiveRoute(f.properties.type)}>
+                      <div style={{fontWeight:800}}>{f.properties.type === 'coolest' ? 'Cooler' : 'Efficient'}</div>
+                      <div style={{fontSize:'1.3rem', color: f.properties.type === 'coolest' ? 'var(--cool-blue)' : 'var(--warm-orange)', fontWeight:900}}>{f.properties.time_mins} min</div>
+                    </div>
+                  ))}
+                  <button className="action-btn" onClick={() => setUi('nav')} style={{marginTop:'12px'}}>Start Walking</button>
+                  <button className="action-btn secondary" onClick={() => {setUi('search'); setRd(null); setSq(''); setEq(''); setSc(null); setEc(null);}}>Reset</button>
+                </div>
+              )}
+              {ui === 'nav' && (
+                <div className="ui-section">
+                  {rd?.features.find(f => f.properties.type === activeRoute)?.properties?.instructions?.map((inst, i) => <div key={i} className="instruction-item" style={{padding:'10px 0', borderBottom:'1px solid #eee', fontSize:'0.9rem'}}>{inst}</div>)}
+                  <button className="action-btn secondary" onClick={() => setUi('search')} style={{marginTop:'12px'}}>End Trip</button>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="ui-section">
+              <span className="section-title">Request a Shade Spot</span>
+              <input type="text" placeholder="Spot Name" value={newReqName} onChange={e => setNewReqName(e.target.value)} style={{marginBottom:'8px', width:'100%', padding:'10px', borderRadius:'8px', border:'1px solid #ddd'}} />
+              <input type="text" placeholder="Description" value={newReqDesc} onChange={e => setNewReqDesc(e.target.value)} style={{marginBottom:'8px', width:'100%', padding:'10px', borderRadius:'8px', border:'1px solid #ddd'}} />
+              <button className="action-btn" onClick={handleRequestSpot} style={{marginBottom:'20px'}}>Add at current view</button>
+              
+              <span className="section-title">Community Shade Spots</span>
+              {communitySpots.map((s, i) => (
+                <div key={i} className="route-card" style={{ cursor: 'default', background: 'var(--bg-panel)', border: '1px solid var(--cool-blue)' }}>
+                  <div style={{fontWeight:800, color: 'var(--cool-blue)'}}>{s.properties.name}</div>
+                  <div style={{fontSize:'0.9rem', marginTop:'6px'}}>{s.properties.description}</div>
+                  <div style={{fontSize:'0.8rem', marginTop:'6px', color:'#888'}}>Votes: {s.properties.votes}</div>
+                </div>
+              ))}
+              {communitySpots.length === 0 && <div style={{padding:'10px', color:'#888'}}>No community spots loaded.</div>}
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="map-container">
+        <Compass bearing={vs.bearing} />
+        {/* Removed the absolute HTML overlay so we can use DeckGL's layer to dim ONLY the map */}
+        <DeckGL viewState={vs} onViewStateChange={({ viewState }) => setVs(viewState)} controller layers={layers}>
+          <Map mapStyle={THEMES[theme]} mapLib={maplibregl} attributionControl={false} />
+        </DeckGL>
+      </div>
+    </>
+  );
+}
