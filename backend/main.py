@@ -274,10 +274,12 @@ def get_route(start_lat: float, start_lon: float, end_lat: float, end_lon: float
         "features": [f for f in [fastest_feature, coolest_feature] if f],
         "sunlight_saved": max(0, sunlight_saved),
         "uv_index": uv,
-        "wind": {
-            "speed": weather.get("wind_speed_10m"),
-            "direction": weather.get("wind_direction_10m")
+        "weather": {
+            "temperature_2m": weather.get("temperature_2m", 82),
+            "wind_speed_10m": weather.get("wind_speed_10m", 5),
+            "wind_direction_10m": weather.get("wind_direction_10m", 225)
         },
+        "solar": {"altitude": alt, "azimuth": az},
         "recommendation": {
             "offset_minutes": int(best_offset * 60),
             "is_now": best_offset == 0

@@ -14,7 +14,7 @@
   --shadow-sm: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
   --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06);
   --shadow-lg: 0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04);
-  --glass-bg: rgba(255, 255, 255, 0.8);
+  --glass-bg: rgba(255, 255, 255, 0.85);
   --glass-border: rgba(255, 255, 255, 0.3);
 }
 
@@ -31,16 +31,18 @@ body {
   width: 100vw;
   height: 100vh;
   display: flex;
+  flex-direction: row;
 }
 
 .map-container {
   flex-grow: 1;
   position: relative;
+  height: 100vh;
 }
 
 /* Sidebar Styling */
 .sidebar {
-  width: 420px;
+  width: 400px;
   height: 100vh;
   background: var(--surface-color);
   z-index: 100;
@@ -48,10 +50,11 @@ body {
   flex-direction: column;
   box-shadow: var(--shadow-lg);
   border-right: 1px solid rgba(0,0,0,0.05);
+  transition: width 0.3s ease;
 }
 
 .sidebar-header {
-  padding: 32px 24px;
+  padding: 24px;
   background: linear-gradient(135deg, var(--primary-dark), var(--primary-accent));
   color: white;
   display: flex;
@@ -61,17 +64,17 @@ body {
 
 .sidebar-header h1 {
   margin: 0;
-  font-size: 1.75rem;
+  font-size: 1.5rem;
   font-weight: 800;
   letter-spacing: -0.02em;
 }
 
 .sidebar-content {
-  padding: 24px;
+  padding: 20px;
   flex-grow: 1;
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 20px;
   overflow-y: auto;
 }
 
@@ -83,7 +86,7 @@ body {
 }
 
 .section-title {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   font-weight: 700;
   color: var(--text-secondary);
   text-transform: uppercase;
@@ -91,12 +94,6 @@ body {
 }
 
 /* Input Fields */
-.input-group {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
 .search-input-wrapper {
   position: relative;
   display: flex;
@@ -104,7 +101,7 @@ body {
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   border-radius: 12px;
-  padding: 12px 16px;
+  padding: 10px 14px;
   transition: all 0.2s;
 }
 
@@ -118,43 +115,42 @@ body {
   border: none;
   background: transparent;
   width: 100%;
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   font-family: inherit;
   outline: none;
   color: var(--text-primary);
 }
 
 .current-loc-btn {
-  background: none;
+  background: #e0f2fe;
   border: none;
   color: var(--primary-accent);
   cursor: pointer;
-  padding: 4px;
-  font-size: 1.2rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  padding: 4px 8px;
+  font-size: 0.75rem;
+  border-radius: 6px;
+  font-weight: 700;
+  margin-left: 8px;
 }
 
 /* Buttons */
 .action-btn {
   width: 100%;
-  padding: 16px;
+  padding: 14px;
   border-radius: 12px;
   border: none;
   background: var(--primary-accent);
   color: white;
   font-weight: 600;
-  font-size: 1rem;
+  font-size: 0.95rem;
   cursor: pointer;
   transition: all 0.2s;
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-sm);
 }
 
 .action-btn:hover {
   background: var(--primary-dark);
   transform: translateY(-1px);
-  box-shadow: var(--shadow-lg);
 }
 
 .action-btn.secondary {
@@ -163,24 +159,14 @@ body {
   box-shadow: none;
 }
 
-.action-btn.secondary:hover {
-  background: #e2e8f0;
-}
-
 /* Route Selection */
 .route-card {
-  padding: 20px;
-  border-radius: 16px;
+  padding: 16px;
+  border-radius: 14px;
   border: 2px solid #f1f5f9;
   background: white;
   cursor: pointer;
   transition: all 0.2s;
-  position: relative;
-}
-
-.route-card:hover {
-  border-color: #e2e8f0;
-  background: #fafafa;
 }
 
 .route-card.active {
@@ -191,86 +177,133 @@ body {
 .route-card .header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 8px;
+  align-items: center;
+  margin-bottom: 4px;
 }
 
 .route-card .type {
   font-weight: 700;
-  font-size: 1.1rem;
+  font-size: 0.95rem;
 }
 
 .route-card .time {
-  font-size: 1.5rem;
+  font-size: 1.3rem;
   font-weight: 800;
-  color: var(--cool-blue);
 }
 
 .route-card .badge {
-  font-size: 0.7rem;
-  padding: 4px 8px;
-  border-radius: 6px;
+  font-size: 0.65rem;
+  padding: 2px 6px;
+  border-radius: 4px;
   background: var(--success);
   color: white;
   font-weight: 700;
 }
 
 .recommendation-banner {
-  background: rgba(16, 185, 129, 0.1);
-  border: 1px solid rgba(16, 185, 129, 0.2);
+  background: #ecfdf5;
+  border: 1px solid #10b98133;
   color: #065f46;
   padding: 12px;
-  border-radius: 12px;
-  font-size: 0.85rem;
+  border-radius: 10px;
+  font-size: 0.8rem;
   font-weight: 600;
-  margin-bottom: 12px;
 }
 
 /* Time Controls */
 .time-controls {
   background: #f8fafc;
-  padding: 20px;
-  border-radius: 16px;
+  padding: 16px;
+  border-radius: 14px;
   border: 1px solid #e2e8f0;
 }
 
 .time-slider {
   width: 100%;
-  margin-top: 12px;
   accent-color: var(--primary-accent);
 }
 
-/* Overlay Elements */
+/* Overlay Elements - FIXED SPACING */
 .weather-container {
   position: absolute;
-  bottom: 32px;
-  right: 32px;
+  bottom: 40px; /* More space from bottom */
+  right: 20px;
   display: flex;
-  gap: 16px;
+  flex-direction: column; /* Stack on mobile, row on desktop */
+  gap: 12px;
   z-index: 50;
 }
 
 .weather-card {
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--glass-bg);
   backdrop-filter: blur(12px);
-  padding: 16px;
-  border-radius: 16px;
+  padding: 12px 16px;
+  border-radius: 14px;
   box-shadow: var(--shadow-lg);
   border: 1px solid var(--glass-border);
-  min-width: 140px;
+  min-width: 120px;
 }
 
 .weather-card .label {
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   font-weight: 700;
   color: var(--text-secondary);
   text-transform: uppercase;
 }
 
 .weather-card .value {
-  font-size: 1.1rem;
+  font-size: 1rem;
   font-weight: 700;
-  margin-top: 4px;
+  margin-top: 2px;
+}
+
+/* Map Credits Styling */
+.map-container .maplibregl-ctrl-bottom-right {
+  bottom: 10px !important;
+  right: 10px !important;
+}
+
+.maplibregl-ctrl-attrib {
+  background: rgba(255,255,255,0.5) !important;
+  border-radius: 4px !important;
+}
+
+/* Mobile Responsiveness */
+@media (max-width: 768px) {
+  #root {
+    flex-direction: column-reverse;
+  }
+  
+  .sidebar {
+    width: 100%;
+    height: 40vh;
+    border-right: none;
+    border-top: 1px solid rgba(0,0,0,0.05);
+  }
+  
+  .map-container {
+    height: 60vh;
+  }
+  
+  .weather-container {
+    bottom: 20px;
+    right: 10px;
+    flex-direction: row; /* Row on mobile bottom */
+    font-size: 0.8rem;
+  }
+  
+  .weather-card {
+    padding: 8px 12px;
+    min-width: 80px;
+  }
+  
+  .sidebar-header {
+    padding: 12px 20px;
+  }
+  
+  .sidebar-header h1 {
+    font-size: 1.2rem;
+  }
 }
 
 /* Autocomplete */
@@ -280,19 +313,19 @@ body {
   left: 0;
   right: 0;
   background: white;
-  border-radius: 12px;
+  border-radius: 10px;
   box-shadow: var(--shadow-lg);
-  margin-top: 8px;
+  margin-top: 6px;
   z-index: 1000;
   overflow: hidden;
   border: 1px solid #e2e8f0;
 }
 
 .autocomplete-item {
-  padding: 12px 16px;
+  padding: 10px 14px;
   cursor: pointer;
   border-bottom: 1px solid #f1f5f9;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
 }
 
 .autocomplete-item:hover {
@@ -307,49 +340,38 @@ body {
 }
 
 .instruction-item {
-  padding: 16px;
+  padding: 12px;
   background: #f8fafc;
-  border-radius: 12px;
-  font-size: 0.9rem;
-  line-height: 1.5;
-  color: var(--text-primary);
-  border-left: 4px solid var(--primary-accent);
+  border-radius: 10px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  border-left: 3px solid var(--primary-accent);
 }
 
 /* Community Section */
 .community-section {
   margin-top: auto;
-  padding: 24px;
+  padding: 20px;
   background: #f8fafc;
   border-top: 1px solid #e2e8f0;
-}
-
-.community-section h4 {
-  margin: 0 0 12px 0;
-  font-size: 0.85rem;
-  color: var(--text-secondary);
 }
 
 .suggest-btn {
   background: white;
   border: 1px dashed var(--text-secondary);
   color: var(--text-secondary);
-  padding: 12px;
-  border-radius: 10px;
+  padding: 10px;
+  border-radius: 8px;
   width: 100%;
   cursor: pointer;
   font-weight: 600;
-  transition: all 0.2s;
-}
-
-.suggest-btn:hover {
-  border-color: var(--primary-accent);
-  color: var(--primary-accent);
+  font-size: 0.85rem;
 }
 
 .thank-you-msg {
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   color: var(--success);
   font-weight: 600;
-  margin-top: 8px;
+  margin-top: 6px;
+  text-align: center;
 }
