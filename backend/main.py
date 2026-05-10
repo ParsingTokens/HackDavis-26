@@ -12,7 +12,6 @@ from skyfield.api import load
 import geopandas as gpd
 from shapely.strtree import STRtree
 import math
-import urllib.request
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -84,16 +83,14 @@ def get_shadow_offset(height, solar_alt, solar_az):
 # CACHE FOR WEIGHTED GRAPHS
 graph_cache = {}
 
-def get_weighted_graph(hours_offset=0, wind_speed_mph=0):
-    offset_key = (round(hours_offset, 1), round(wind_speed_mph, 1))
+def get_weighted_graph(hours_offset=0):
+    offset_key = round(hours_offset, 1)
     if offset_key in graph_cache:
         return graph_cache[offset_key]
     
     print(f"Calculating dynamic weights for offset {offset_key}...")
     alt, az, uv = get_solar_pos(hours_offset)
     is_night = alt <= 0
-    # Wind reduces heat penalty: 10mph wind ~10% less heat, 20mph ~20%, capped at 60%
-    wind_cooling = min(0.6, wind_speed_mph * 0.03)
     
     G_copy = G.copy()
     for u, v, k, data in G_copy.edges(keys=True, data=True):
@@ -144,7 +141,7 @@ def get_weighted_graph(hours_offset=0, wind_speed_mph=0):
         else:
             data['exposure_ratio'] = 1.0
             
-        heat_penalty = 20.0 * (1.0 - wind_cooling)
+        heat_penalty = 20.0
         data['weight'] = length * (1 + (data['exposure_ratio'] * heat_penalty))
     
     graph_cache[offset_key] = G_copy
@@ -190,11 +187,10 @@ def build_geojson_from_path(graph, path, route_type, color):
     }
 
 @app.get("/route")
-def get_route(start_lat: float, start_lon: float, end_lat: float, end_lon: float,
-             time_offset: float = 0, wind_speed: float = 0):
+def get_route(start_lat: float, start_lon: float, end_lat: float, end_lon: float, time_offset: float = 0):
     if G is None: return {"error": "Graph not loaded"}
     
-    current_G = get_weighted_graph(time_offset, wind_speed)
+    current_G = get_weighted_graph(time_offset)
     
     try:
         orig = ox.distance.nearest_nodes(current_G, start_lon, start_lat)
@@ -237,54 +233,6 @@ def get_route(start_lat: float, start_lon: float, end_lat: float, end_lon: float
 def get_sun_position(hours_offset: float = 0):
     alt, az, uv = get_solar_pos(hours_offset)
     return {"altitude": round(alt, 1), "azimuth": round(az, 1), "uv_index": uv}
-
-@app.get("/weather")
-def get_weather():
-    """Fetch live weather including wind speed and direction."""
-    try:
-        url = ("https://api.open-meteo.com/v1/forecast"
-               "?latitude=38.5449&longitude=-121.7405"
-               "&current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,apparent_temperature"
-               "&temperature_unit=fahrenheit&wind_speed_unit=mph")
-        with urllib.request.urlopen(url, timeout=5) as resp:
-            data = json.loads(resp.read())
-        c = data.get("current", {})
-        return {
-            "temperature": c.get("temperature_2m"),
-            "feels_like": c.get("apparent_temperature"),
-            "humidity": c.get("relative_humidity_2m"),
-            "wind_speed": c.get("wind_speed_10m", 0),
-            "wind_direction": c.get("wind_direction_10m", 0),
-        }
-    except Exception as e:
-        print("Weather fetch error:", e)
-        return {"temperature": None, "feels_like": None, "humidity": None,
-                "wind_speed": 0, "wind_direction": 180}
-
-@app.get("/best_departure")
-def get_best_departure():
-    """Find the best time to leave in the next 60 minutes based on lowest UV / most shade."""
-    slots = []
-    now = datetime.now(timezone.utc)
-    for minutes in range(0, 65, 5):
-        offset_hours = minutes / 60.0
-        alt, az, uv = get_solar_pos(offset_hours)
-        # Lower score = better (less UV, lower sun)
-        score = uv if alt > 0 else 0
-        local_time = now + timedelta(minutes=minutes)
-        slots.append({
-            "minutes_from_now": minutes,
-            "local_time": local_time.astimezone().strftime("%-I:%M %p") if hasattr(local_time, 'astimezone') else str(local_time),
-            "uv_index": round(uv, 1),
-            "sun_altitude": round(alt, 1),
-            "score": round(score, 2)
-        })
-    # Best = lowest score
-    best = min(slots, key=lambda s: s["score"])
-    return {
-        "best_slot": best,
-        "all_slots": slots
-    }
 
 @app.get("/trees")
 def get_trees():
