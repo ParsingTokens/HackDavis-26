@@ -39,7 +39,7 @@ const getTreeColor = (name) => {
 const generateSunRays = (az, alt) => {
   if (alt <= 0) return [];
   const rays = [];
-  const count = 450;
+  const count = 400;
   for (let i = 0; i < count; i++) {
     const lat = 38.51 + Math.random() * 0.06;
     const lon = -121.78 + Math.random() * 0.06;
@@ -101,7 +101,6 @@ function SearchInput({ placeholder, value, onChange, onSelect, isDeparture = fal
     if (value.length > 1 && showDropdown && value !== "Current Location") {
       const localMatches = pois.filter(p => p.name.toLowerCase().includes(value.toLowerCase()));
       const delay = setTimeout(() => {
-        // Broadened search to include all UC Davis halls and California locations
         fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${value}, UC Davis, Davis, CA`)
           .then(res => res.json())
           .then(data => {
@@ -143,10 +142,11 @@ function App() {
   const [routeData, setRouteData] = useState(null);
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeError, setRouteError] = useState(null);
-  const [activeRoute, setActiveRoute] = useState('coolest');
+  const [activeRoute, setActiveRoute] = useState('comfort');
   
   const [treesData, setTreesData] = useState(null);
   const [buildingsData, setBuildingsData] = useState(null);
+  const [lightsData, setLightsData] = useState(null);
   const [weather, setWeather] = useState(null);
   const [sunPos, setSunPos] = useState({ altitude: -20, azimuth: 0, uv: 0 });
   const [time, setTime] = useState(0);
@@ -156,6 +156,7 @@ function App() {
   useEffect(() => {
     fetch('http://localhost:8000/trees').then(res => res.json()).then(data => setTreesData(data));
     fetch('http://localhost:8000/buildings').then(res => res.json()).then(data => setBuildingsData(data));
+    fetch('http://localhost:8000/lights').then(res => res.json()).then(data => setLightsData(data));
     const animate = () => { setTime(t => (t + 15) % 20000); requestAnimationFrame(animate); };
     const reqId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(reqId);
@@ -174,7 +175,7 @@ function App() {
           if (data.error) setRouteError(data.error);
           else {
             setRouteData(data);
-            setActiveRoute('coolest');
+            setActiveRoute('comfort');
             setWeather(data.weather);
             if (uiState === 'search' || uiState === 'preview') {
               setUiState('preview');
@@ -191,26 +192,22 @@ function App() {
         .catch(() => { setRouteLoading(false); setRouteError("Calculation failed."); });
     };
 
-    if (immediate) {
-      triggerSearch();
-    } else {
+    if (immediate) triggerSearch();
+    else {
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
       debounceTimer.current = setTimeout(triggerSearch, 600);
     }
   };
 
-  // Sync environment and trigger debounced search on slider change
   useEffect(() => {
     fetch(`http://localhost:8000/sun_position?hours_offset=${timeOffset}`).then(res => res.json()).then(data => {
       setSunPos({ altitude: data.altitude, azimuth: data.azimuth, uv: data.uv_index });
       setTheme(data.altitude > 0 ? 'light' : 'dark');
     });
     fetch(`http://localhost:8000/weather?hours_offset=${timeOffset}`).then(res => res.json()).then(data => setWeather(data));
-    
     if (startCoords && endCoords) handleSearch(false);
   }, [timeOffset]);
 
-  // Immediate search on coordinate selection
   useEffect(() => {
     if (startCoords && endCoords) handleSearch(true);
   }, [startCoords, endCoords]);
@@ -218,26 +215,39 @@ function App() {
   const sunRays = useMemo(() => generateSunRays(sunPos.azimuth, sunPos.altitude), [sunPos]);
   const windRays = useMemo(() => generateWindRays(weather?.wind_dir), [weather]);
 
+  const isNight = sunPos.altitude <= 0;
+
   const layers = [
     buildingsData && new GeoJsonLayer({
-      id: 'buildings',
-      data: buildingsData,
-      extruded: true,
+      id: 'buildings', data: buildingsData, extruded: true,
       getElevation: d => d.properties?.height || 10,
-      // Darkened buildings in daytime for better visibility of wind/path
-      getFillColor: theme === 'dark' ? [45, 55, 72, 220] : [100, 116, 139, 210],
+      getFillColor: isNight ? [45, 55, 72, 220] : [100, 116, 139, 210],
       getLineColor: [80, 100, 120, 80],
       material: { ambient: 0.5, diffuse: 0.5, shininess: 20 }
     }),
     treesData && [
       new ColumnLayer({
         id: 'trunks', data: treesData.features, getPosition: d => d.geometry.coordinates,
-        getFillColor: [88, 64, 44], radius: 0.2, extruded: true, getElevation: 4
+        getFillColor: [88, 64, 44], radius: 0.2, extruded: true, 
+        getElevation: isNight ? 2 : 4 // Shrink trunks at night
       }),
       new ColumnLayer({
         id: 'canopy', data: treesData.features, getPosition: d => d.geometry.coordinates,
         getFillColor: d => [...getTreeColor(d.properties.common), 150],
-        radius: 4.5, extruded: true, getElevation: d => (d.properties.height_m || 8) * 0.7, offset: [0, 0, 4]
+        radius: isNight ? 2.5 : 4.5, // Shrink canopy at night
+        extruded: true, 
+        getElevation: d => ((d.properties.height_m || 8) * 0.7) * (isNight ? 0.6 : 1.0), 
+        offset: [0, 0, isNight ? 2 : 4]
+      })
+    ],
+    lightsData && isNight && [
+      new ColumnLayer({
+        id: 'lamp-posts', data: lightsData.features, getPosition: d => d.geometry.coordinates,
+        getFillColor: [40, 40, 40], radius: 0.15, extruded: true, getElevation: 5
+      }),
+      new ColumnLayer({
+        id: 'lamp-glow', data: lightsData.features, getPosition: d => d.geometry.coordinates,
+        getFillColor: [255, 255, 180, 200], radius: 0.4, extruded: true, getElevation: 0.6, offset: [0, 0, 5]
       })
     ],
     routeData && routeData.features.map(f => {
@@ -245,18 +255,17 @@ function App() {
       if (uiState === 'nav' && !active) return null;
       return new GeoJsonLayer({
         id: `route-${f.properties.type}`, data: f, lineWidthUnits: 'pixels',
-        getLineColor: f.properties.type === 'coolest' ? [14, 165, 233, active ? 255 : 120] : [245, 158, 11, active ? 255 : 120],
+        getLineColor: f.properties.type === 'comfort' ? [14, 165, 233, active ? 255 : 120] : [245, 158, 11, active ? 255 : 120],
         getLineWidth: active ? 10 : 5, parameters: { depthTest: false }
       });
     }),
-    sunPos.altitude > 0 && new TripsLayer({
+    !isNight && new TripsLayer({
       id: 'sun-rays', data: sunRays, getPath: d => d.path, getTimestamps: d => d.timestamps,
       getColor: [255, 255, 255, 30], widthMinPixels: 1.2, trailLength: 4000, currentTime: time, parameters: { depthTest: false }
     }),
     new TripsLayer({
       id: 'wind-rays', data: windRays, getPath: d => d.path, getTimestamps: d => d.timestamps,
-      // Enhanced wind visibility in day mode
-      getColor: theme === 'light' ? [255, 255, 255, 140] : [255, 255, 255, 60], 
+      getColor: !isNight ? [255, 255, 255, 140] : [255, 255, 255, 60], 
       widthMinPixels: 2, trailLength: 1500, currentTime: time, parameters: { depthTest: false }
     })
   ].flat().filter(Boolean);
@@ -267,15 +276,8 @@ function App() {
   };
 
   const resetAll = () => {
-    setUiState('search');
-    setRouteData(null);
-    setRouteLoading(false);
-    setRouteError(null);
-    setStartQuery('');
-    setStartCoords(null);
-    setEndQuery('');
-    setEndCoords(null);
-    setTimeOffset(0);
+    setUiState('search'); setRouteData(null); setRouteLoading(false); setRouteError(null);
+    setStartQuery(''); setStartCoords(null); setEndQuery(''); setEndCoords(null); setTimeOffset(0);
   };
 
   return (
@@ -287,7 +289,7 @@ function App() {
             <span className="section-title">Schedule</span>
             <div className="time-controls">
               <label style={{fontSize: '0.8rem', fontWeight: 700}}>
-                {sunPos.altitude > 0 ? "☀️ Day Mode" : "🌙 Night Mode"}
+                {isNight ? "🌙 Safety Mode (Lit Paths)" : "☀️ Comfort Mode (Shaded Paths)"}
                 <span style={{float: 'right', color: 'var(--primary-accent)'}}>{getClock(timeOffset)}</span>
               </label>
               <input type="range" min="0" max="24" step="0.5" value={timeOffset} onChange={(e) => setTimeOffset(parseFloat(e.target.value))} className="time-slider" />
@@ -308,14 +310,14 @@ function App() {
           {uiState === 'preview' && (
             <div className="ui-section">
               <span className="section-title">Path Options</span>
-              {routeLoading ? <div className="thank-you-msg">Optimizing Thermal Route...</div> : routeError ? <div style={{color:'red', fontSize:'0.8rem'}}>{routeError}</div> : (
+              {routeLoading ? <div className="thank-you-msg">{isNight ? "Calculating Safest Route..." : "Calculating Coolest Route..."}</div> : routeError ? <div style={{color:'red', fontSize:'0.8rem'}}>{routeError}</div> : (
                 routeData?.features.map(f => (
                   <div key={f.properties.type} className={`route-card ${activeRoute === f.properties.type ? 'active' : ''}`} onClick={() => setActiveRoute(f.properties.type)}>
                     <div className="header">
-                      <span className="type">{f.properties.type === 'coolest' ? "Cooler" : "Efficient"}</span>
-                      {f.properties.type === 'coolest' && <span className="badge">Best Temp</span>}
+                      <span className="type">{f.properties.type === 'comfort' ? "Comfort Path" : "Efficient"}</span>
+                      {f.properties.type === 'comfort' && <span className="badge">{isNight ? "Safest" : "Coolest"}</span>}
                     </div>
-                    <div className="time" style={{color: f.properties.type === 'coolest' ? 'var(--cool-blue)' : 'var(--warm-orange)'}}>{f.properties.time_mins} min</div>
+                    <div className="time" style={{color: f.properties.type === 'comfort' ? 'var(--cool-blue)' : 'var(--warm-orange)'}}>{f.properties.time_mins} min</div>
                   </div>
                 ))
               )}

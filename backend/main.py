@@ -29,7 +29,7 @@ class CommunitySpot(BaseModel):
     date_added: str = None
     upvotes: int = 0
 
-app = FastAPI(title="Canopy Thermal Navigation Backend")
+app = FastAPI(title="Canopy Thermal & Safety Navigation")
 
 app.add_middleware(
     CORSMiddleware,
@@ -45,6 +45,8 @@ trees_df = None
 tree_sindex = None
 buildings_df = None
 building_sindex = None
+lights_df = None
+lights_sindex = None
 ts = load.timescale()
 planets = load('de421.bsp')
 earth, sun = planets['earth'], planets['sun']
@@ -52,7 +54,7 @@ from skyfield.toposlib import wgs84
 observer = earth + wgs84.latlon(DAVIS_LAT, DAVIS_LON)
 
 def load_data():
-    global G, trees_df, tree_sindex, buildings_df, building_sindex
+    global G, trees_df, tree_sindex, buildings_df, building_sindex, lights_df, lights_sindex
     try:
         with open(os.path.join(BASE_DIR, "davis_graph.pkl"), "rb") as f:
             G = pickle.load(f)
@@ -66,8 +68,13 @@ def load_data():
         if os.path.exists(buildings_path):
             buildings_df = gpd.read_file(buildings_path)
             building_sindex = STRtree(buildings_df.geometry.values)
+
+        lights_path = os.path.join(BASE_DIR, "lights.geojson")
+        if os.path.exists(lights_path):
+            lights_df = gpd.read_file(lights_path)
+            lights_sindex = STRtree(lights_df.geometry.values)
             
-        print(f"Core data loaded successfully.")
+        print(f"Data loaded: Graph, Trees, Buildings, and Lights index active.")
     except Exception as e:
         print(f"Data load error: {e}")
 
@@ -131,30 +138,36 @@ def get_weighted_graph(hours_offset=0):
     
     for u, v, k, data in G_copy.edges(keys=True, data=True):
         length = data.get('length', 1.0)
-        
-        if is_night:
-            data['weight'] = length
-            data['exposure_ratio'] = 0
-            continue
-            
         geom = data.get('geometry')
         if not geom:
             geom = LineString([Point(G_copy.nodes[u]['x'], G_copy.nodes[u]['y']), Point(G_copy.nodes[v]['x'], G_copy.nodes[v]['y'])])
         
-        # 1. Hall / Building Cut-through Check (Huge Bonus during day)
+        if is_night:
+            # NIGHT FORMULA: SAFETY FIRST
+            # Penalize dark paths. Check distance to nearest light.
+            darkness_penalty = 50.0 
+            if lights_sindex:
+                # Buffer 30m for "well lit"
+                nearby_lights = lights_sindex.query(geom.buffer(0.0003))
+                if len(nearby_lights) > 0:
+                    # More lights = safer
+                    darkness_penalty = max(0, 50.0 - (len(nearby_lights) * 5.0))
+            
+            data['weight'] = length * (1.0 + darkness_penalty)
+            data['exposure_ratio'] = 0
+            continue
+            
+        # DAY FORMULA: COMFORT FIRST (Existing Thermal Logic)
         is_indoor = False
         if building_sindex:
             nearby_b_idx = building_sindex.query(geom.centroid.buffer(0.0001))
-            if len(nearby_b_idx) > 0:
-                is_indoor = True
+            if len(nearby_b_idx) > 0: is_indoor = True
         
         if is_indoor:
-            # Halls are 95% faster in thermal terms (AC bonus)
             data['weight'] = length * 0.05 
             data['exposure_ratio'] = 0
             continue
             
-        # 2. Shade Check
         exposure = 1.0
         if tree_sindex:
             nearby_t_idx = tree_sindex.query(geom.buffer(0.0003))
@@ -176,8 +189,6 @@ def get_weighted_graph(hours_offset=0):
                     exposure = max(0.0, 1.0 - (shaded_len / geom.length)) if geom.length > 0 else 1.0
         
         data['exposure_ratio'] = round(exposure, 2)
-        
-        # Thermal Penalty: Increased significantly (50x) to ensure path divergence
         thermal_penalty = (exposure * 50.0) * wind_cooling
         data['weight'] = length * (1.0 + thermal_penalty)
         
@@ -237,24 +248,16 @@ def get_route(start_lat: float, start_lon: float, end_lat: float, end_lon: float
         orig = ox.distance.nearest_nodes(G_weighted, start_lon, start_lat)
         dest = ox.distance.nearest_nodes(G_weighted, end_lon, end_lat)
         
-        # 1. EFFICIENT (Shortest Distance)
         f_path = nx.shortest_path(G_weighted, orig, dest, weight='length')
         f_feat = build_geojson(G_weighted, f_path, 'fastest', '#f59e0b')
         
-        # 2. COOLER (Shortest Thermal Weight)
         c_path = nx.shortest_path(G_weighted, orig, dest, weight='weight')
-        c_feat = build_geojson(G_weighted, c_path, 'coolest', '#0ea5e9')
+        # Rename to 'comfort'
+        c_feat = build_geojson(G_weighted, c_path, 'comfort', '#0ea5e9')
         
-        # Environment metadata
         alt, az, uv = get_solar_pos(time_offset)
         weather = get_weather_data(time_offset)
         
-        # Sunlight Saved check
-        saved = 0
-        f_e = f_feat['properties']['exposure']
-        c_e = c_feat['properties']['exposure']
-        if f_e > 0: saved = int(max(0, (1.0 - (c_e / f_e)) * 100))
-
         return {
             "features": [f_feat, c_feat],
             "weather": {
@@ -262,8 +265,7 @@ def get_route(start_lat: float, start_lon: float, end_lat: float, end_lon: float
                 "wind_speed": weather.get('wind_speed_10m', 5),
                 "wind_dir": weather.get('wind_direction_10m', 225)
             },
-            "sun": {"alt": alt, "az": az, "uv": uv},
-            "sunlight_saved": saved
+            "sun": {"alt": alt, "az": az, "uv": uv}
         }
     except Exception as e:
         return {"error": str(e)}
@@ -277,6 +279,13 @@ def sun_pos(hours_offset: float = 0):
 def weather_api(hours_offset: float = 0):
     w = get_weather_data(hours_offset)
     return {"temp": w.get('temperature_2m'), "wind_speed": w.get('wind_speed_10m'), "wind_dir": w.get('wind_direction_10m')}
+
+@app.get("/lights")
+def lights_api():
+    path = os.path.join(BASE_DIR, "lights.geojson")
+    if os.path.exists(path):
+        with open(path, "r") as f: return json.load(f)
+    return {"type": "FeatureCollection", "features": []}
 
 @app.get("/trees")
 def trees_api():
