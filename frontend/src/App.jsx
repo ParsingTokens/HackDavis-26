@@ -3,7 +3,7 @@ import DeckGL from '@deck.gl/react';
 import Map from 'react-map-gl/maplibre';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { GeoJsonLayer, ColumnLayer } from '@deck.gl/layers';
+import { GeoJsonLayer, ColumnLayer, TextLayer, PolygonLayer } from '@deck.gl/layers';
 import { TripsLayer } from '@deck.gl/geo-layers';
 
 const INIT_VS = { longitude: -121.7495, latitude: 38.5397, zoom: 16, pitch: 45, bearing: 0, transitionDuration: 300 };
@@ -88,8 +88,9 @@ function Compass({ bearing }) {
 export default function App() {
   const [vs, setVs] = useState(INIT_VS);
   const [ui, setUi] = useState('search');
+  const [activeTab, setActiveTab] = useState('nav');
   const [timeOff, setTimeOff] = useState(0);
-  const [tintMode, setTintMode] = useState(false); // Tint disabled by default
+  const [tintMode, setTintMode] = useState(false);
   const [theme, setTheme] = useState('dark');
   const [sq, setSq] = useState(''); const [sc, setSc] = useState(null);
   const [eq, setEq] = useState(''); const [ec, setEc] = useState(null);
@@ -103,11 +104,19 @@ export default function App() {
   const [sun, setSun] = useState({ alt: -20, az: 0 });
   const [tick, setTick] = useState(0);
   const [pois, setPois] = useState([]);
+  const [communitySpots, setCommunitySpots] = useState([]);
+  const [newReqName, setNewReqName] = useState('');
+  const [newReqDesc, setNewReqDesc] = useState('');
 
   useEffect(() => {
     fetch('http://localhost:8000/trees').then(r => r.json()).then(setTrees);
     fetch('http://localhost:8000/buildings').then(r => r.json()).then(setBldg);
     fetch('http://localhost:8000/pois').then(r => r.json()).then(d => setPois(Array.isArray(d) ? d : []));
+    fetch('http://localhost:8000/community_spots').then(r => r.json()).then(d => {
+      // Force 0 upvotes for all as requested
+      const spots = (d.features || []).map(s => ({...s, properties: {...s.properties, votes: 0}}));
+      setCommunitySpots(spots);
+    });
     const a = () => { setTick(t => (t + 25) % 15000); requestAnimationFrame(a); };
     const id = requestAnimationFrame(a);
     return () => cancelAnimationFrame(id);
@@ -119,7 +128,7 @@ export default function App() {
     fetch(`http://localhost:8000/route?start_lat=${sc.lat}&start_lon=${sc.lon}&end_lat=${ec.lat}&end_lon=${ec.lon}&time_offset=${timeOff}`)
       .then(r => r.json()).then(d => {
         setLoading(false);
-        if (d.error) setErr(d.error); else { setRd(d); setWeather(d.weather); setUi('preview'); }
+        if (d.error) setErr(d.error); else { setRd(d); setWeather(d.weather); setUi('preview'); setActiveTab('nav'); }
       }).catch(() => { setLoading(false); setErr('Connection failed.'); });
   }, [sc, ec, timeOff]);
 
@@ -128,10 +137,25 @@ export default function App() {
     fetch(`http://localhost:8000/weather?hours_offset=${timeOff}`).then(r => r.json()).then(setWeather);
   }, [timeOff]);
 
+  const handleRequestSpot = () => {
+    if (!newReqName) return;
+    const n = { type: 'Feature', properties: { name: newReqName, description: newReqDesc, votes: 0 }, geometry: { type: 'Point', coordinates: [vs.longitude, vs.latitude] } };
+    setCommunitySpots([n, ...communitySpots]);
+    setNewReqName(''); setNewReqDesc('');
+  };
+
   const sunTrips = useMemo(() => makeSunTrips(sun.az, sun.alt), [sun.az, sun.alt]);
   const windTrips = useMemo(() => makeWindTrips(weather?.wind_dir), [weather?.wind_dir]);
 
   const layers = [
+    // Dimming overlay layer below everything else
+    tintMode && new PolygonLayer({
+      id: 'dim-overlay',
+      data: [{ polygon: [[-180, 90], [180, 90], [180, -90], [-180, -90], [-180, 90]] }],
+      getPolygon: d => d.polygon,
+      getFillColor: [5, 10, 25, 200],
+      parameters: { depthTest: false }
+    }),
     bldg && new GeoJsonLayer({
       id: 'bldg', data: bldg, extruded: true, getElevation: d => d.properties?.height || 10,
       getFillColor: theme === 'dark' ? [20, 30, 50, 255] : [120, 130, 150, 255],
@@ -141,9 +165,8 @@ export default function App() {
       new ColumnLayer({ id: 'tr', data: trees.features, getPosition: d => d.geometry.coordinates, getFillColor: [60, 40, 20], radius: 0.5, extruded: true, getElevation: 3 }),
       new ColumnLayer({ id: 'cy', data: trees.features, getPosition: d => d.geometry.coordinates, getFillColor: d => [...treeColor(d.properties.common), 220], radius: 4, extruded: true, getElevation: 8, opacity: tintMode ? 0.3 : 1 })
     ],
-    rd?.features.map(f => {
+    rd?.features && rd.features.map(f => {
       const a = activeRoute === f.properties.type;
-      // BRIGHT paths in tint mode
       const coolColor = tintMode ? [0, 255, 255, a ? 255 : 120] : [0, 150, 220, a ? 255 : 120];
       const effColor = tintMode ? [255, 220, 0, a ? 255 : 120] : [255, 120, 0, a ? 255 : 120];
       return new GeoJsonLayer({
@@ -154,15 +177,18 @@ export default function App() {
     }),
     sun.alt > 0 && new TripsLayer({
       id: 'sun', data: sunTrips, getPath: d => d.path, getTimestamps: d => d.ts,
-      // VIBRANT YELLOW in tint mode
       getColor: tintMode ? [255, 255, 100, 255] : [255, 240, 150, 200], 
       widthMinPixels: tintMode ? 6 : 4, trailLength: 6000, currentTime: tick, parameters: { depthTest: false }
     }),
     new TripsLayer({
       id: 'wind', data: windTrips, getPath: d => d.path, getTimestamps: d => d.ts,
-      // PURE WHITE in tint mode
       getColor: tintMode ? [255, 255, 255, 255] : [240, 240, 240, 200], 
       widthMinPixels: tintMode ? 4 : 3, trailLength: 2500, currentTime: tick, parameters: { depthTest: false }
+    }),
+    // Actual pins using TextLayer with emoji
+    communitySpots.length > 0 && new TextLayer({
+      id: 'community-pins-text', data: communitySpots, getPosition: d => d.geometry.coordinates,
+      getText: d => '📍', getSize: 40, getColor: [255, 50, 50, 255], getAlignmentBaseline: 'bottom', pickable: true
     })
   ].flat().filter(Boolean);
 
@@ -171,50 +197,78 @@ export default function App() {
   return (
     <>
       <div className="sidebar">
-        <div className="sidebar-header"><h1>Canopy</h1></div>
+        <div className="sidebar-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h1>Canopy</h1>
+        </div>
+        <div style={{ display: 'flex', padding: '0 20px', gap: '10px', marginBottom: '10px' }}>
+          <button onClick={() => setActiveTab('nav')} style={{ flex: 1, padding: '8px', background: activeTab === 'nav' ? 'var(--primary-accent)' : 'transparent', color: activeTab === 'nav' ? '#fff' : 'var(--text-main)', border: '1px solid var(--primary-accent)', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Navigation</button>
+          <button onClick={() => setActiveTab('community')} style={{ flex: 1, padding: '8px', background: activeTab === 'community' ? 'var(--cool-blue)' : 'transparent', color: activeTab === 'community' ? '#fff' : 'var(--text-main)', border: '1px solid var(--cool-blue)', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Community</button>
+        </div>
         <div className="sidebar-content">
-          <div className="ui-section">
-            <span className="section-title">Schedule</span>
-            <div className="input-group" style={{flexDirection:'row', alignItems:'center', gap:'12px'}}>
-              <input type="number" value={timeOff} onChange={e => setTimeOff(parseFloat(e.target.value))} 
-                style={{width:'80px', padding:'12px', fontSize:'1.2rem', fontWeight:800, borderRadius:'10px', border:'2px solid var(--primary-accent)'}} />
-              <span style={{fontWeight:700}}>Hours ahead</span>
-            </div>
-            <div style={{marginTop:'12px', fontSize:'1rem', color:'var(--primary-accent)', fontWeight:800}}>Forecast: {clock(timeOff)}</div>
-            <button className={`action-btn secondary ${tintMode ? 'active' : ''}`} onClick={() => setTintMode(!tintMode)} style={{marginTop:'15px'}}>
-              {tintMode ? 'Visual Tint: ON' : 'Visual Tint: OFF'}
-            </button>
-          </div>
-          <div className="ui-section">
-            <span className="section-title">Navigation</span>
-            <SearchInput placeholder="From Building" value={sq} onChange={setSq} onSelect={(lat, lon) => setSc({ lat, lon })} pois={pois} isDeparture />
-            <SearchInput placeholder="To Building" value={eq} onChange={setEq} onSelect={(lat, lon) => setEc({ lat, lon })} pois={pois} />
-            <button className="action-btn" onClick={doRoute} disabled={loading} style={{marginTop:'12px'}}>{loading ? 'Calculating...' : 'Go'}</button>
-          </div>
-          {ui === 'preview' && rd && (
+          {activeTab === 'nav' ? (
+            <>
+              <div className="ui-section">
+                <span className="section-title">Schedule</span>
+                <div className="input-group" style={{flexDirection:'row', alignItems:'center', gap:'12px'}}>
+                  <input type="number" value={timeOff} onChange={e => setTimeOff(parseFloat(e.target.value))} 
+                    style={{width:'80px', padding:'12px', fontSize:'1.2rem', fontWeight:800, borderRadius:'10px', border:'2px solid var(--primary-accent)'}} />
+                  <span style={{fontWeight:700}}>Hours ahead</span>
+                </div>
+                <div style={{marginTop:'12px', fontSize:'1rem', color:'var(--primary-accent)', fontWeight:800}}>Forecast: {clock(timeOff)}</div>
+                <button className={`action-btn secondary ${tintMode ? 'active' : ''}`} onClick={() => setTintMode(!tintMode)} style={{marginTop:'15px'}}>
+                  {tintMode ? 'Visual Tint: ON' : 'Visual Tint: OFF'}
+                </button>
+              </div>
+              <div className="ui-section">
+                <span className="section-title">Navigation</span>
+                <SearchInput placeholder="From Building" value={sq} onChange={setSq} onSelect={(lat, lon) => setSc({ lat, lon })} pois={pois} isDeparture />
+                <SearchInput placeholder="To Building" value={eq} onChange={setEq} onSelect={(lat, lon) => setEc({ lat, lon })} pois={pois} />
+                <button className="action-btn" onClick={doRoute} disabled={loading} style={{marginTop:'12px'}}>{loading ? 'Calculating...' : 'Go'}</button>
+              </div>
+              {ui === 'preview' && rd && (
+                <div className="ui-section">
+                  {rd.features.map(f => (
+                    <div key={f.properties.type} className={`route-card ${activeRoute === f.properties.type ? 'active' : ''}`} onClick={() => setActiveRoute(f.properties.type)}>
+                      <div style={{fontWeight:800}}>{f.properties.type === 'coolest' ? 'Cooler' : 'Efficient'}</div>
+                      <div style={{fontSize:'1.3rem', color: f.properties.type === 'coolest' ? 'var(--cool-blue)' : 'var(--warm-orange)', fontWeight:900}}>{f.properties.time_mins} min</div>
+                    </div>
+                  ))}
+                  <button className="action-btn" onClick={() => setUi('nav')} style={{marginTop:'12px'}}>Start Walking</button>
+                  <button className="action-btn secondary" onClick={() => {setUi('search'); setRd(null); setSq(''); setEq(''); setSc(null); setEc(null);}}>Reset</button>
+                </div>
+              )}
+              {ui === 'nav' && (
+                <div className="ui-section">
+                  {rd?.features.find(f => f.properties.type === activeRoute)?.properties?.instructions?.map((inst, i) => <div key={i} className="instruction-item" style={{padding:'10px 0', borderBottom:'1px solid #eee', fontSize:'0.9rem'}}>{inst}</div>)}
+                  <button className="action-btn secondary" onClick={() => setUi('search')} style={{marginTop:'12px'}}>End Trip</button>
+                </div>
+              )}
+            </>
+          ) : (
             <div className="ui-section">
-              {rd.features.map(f => (
-                <div key={f.properties.type} className={`route-card ${activeRoute === f.properties.type ? 'active' : ''}`} onClick={() => setActiveRoute(f.properties.type)}>
-                  <div style={{fontWeight:800}}>{f.properties.type === 'coolest' ? 'Cooler' : 'Efficient'}</div>
-                  <div style={{fontSize:'1.3rem', color: f.properties.type === 'coolest' ? 'var(--cool-blue)' : 'var(--warm-orange)', fontWeight:900}}>{f.properties.time_mins} min</div>
+              <span className="section-title">Request a Shade Spot</span>
+              <input type="text" placeholder="Spot Name" value={newReqName} onChange={e => setNewReqName(e.target.value)} style={{marginBottom:'8px', width:'100%', padding:'10px', borderRadius:'8px', border:'1px solid #ddd'}} />
+              <input type="text" placeholder="Description" value={newReqDesc} onChange={e => setNewReqDesc(e.target.value)} style={{marginBottom:'8px', width:'100%', padding:'10px', borderRadius:'8px', border:'1px solid #ddd'}} />
+              <button className="action-btn" onClick={handleRequestSpot} style={{marginBottom:'20px'}}>Add at current view</button>
+              
+              <span className="section-title">Community Shade Spots</span>
+              {communitySpots.map((s, i) => (
+                <div key={i} className="route-card" style={{ cursor: 'default', background: 'var(--bg-panel)', border: '1px solid var(--cool-blue)' }}>
+                  <div style={{fontWeight:800, color: 'var(--cool-blue)'}}>{s.properties.name}</div>
+                  <div style={{fontSize:'0.9rem', marginTop:'6px'}}>{s.properties.description}</div>
+                  <div style={{fontSize:'0.8rem', marginTop:'6px', color:'#888'}}>Votes: {s.properties.votes}</div>
                 </div>
               ))}
-              <button className="action-btn" onClick={() => setUi('nav')} style={{marginTop:'12px'}}>Start Walking</button>
-              <button className="action-btn secondary" onClick={() => {setUi('search'); setRd(null); setSq(''); setEq(''); setSc(null); setEc(null);}}>Reset</button>
-            </div>
-          )}
-          {ui === 'nav' && (
-            <div className="ui-section">
-              {rd?.features.find(f => f.properties.type === activeRoute)?.properties?.instructions?.map((inst, i) => <div key={i} className="instruction-item" style={{padding:'10px 0', borderBottom:'1px solid #eee', fontSize:'0.9rem'}}>{inst}</div>)}
-              <button className="action-btn secondary" onClick={() => setUi('search')} style={{marginTop:'12px'}}>End Trip</button>
+              {communitySpots.length === 0 && <div style={{padding:'10px', color:'#888'}}>No community spots loaded.</div>}
             </div>
           )}
         </div>
       </div>
       <div className="map-container">
-        {tintMode && <div style={{position:'absolute', inset:0, background:'rgba(5,10,25,0.75)', pointerEvents:'none', zIndex:1}} />}
+        <Compass bearing={vs.bearing} />
+        {/* Removed the absolute HTML overlay so we can use DeckGL's layer to dim ONLY the map */}
         <DeckGL viewState={vs} onViewStateChange={({ viewState }) => setVs(viewState)} controller layers={layers}>
-          <Map mapStyle={THEMES[theme]} mapLib={maplibregl} />
+          <Map mapStyle={THEMES[theme]} mapLib={maplibregl} attributionControl={false} />
         </DeckGL>
       </div>
     </>

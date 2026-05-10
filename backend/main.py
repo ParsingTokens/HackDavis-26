@@ -63,7 +63,6 @@ def _precompute():
     global _edge_cx, _edge_cy, _edge_ids, _edge_lengths, _edge_is_indoor, _edge_tree_lookups, _trees_list, _kdtree, _node_ids
     _edge_cx, _edge_cy, _edge_ids, _edge_lengths, _edge_is_indoor, _edge_tree_lookups = [], [], [], [], [], []
     
-    # Precompute fast tree array to avoid slow pandas lookups
     _trees_list = []
     if trees_df is not None:
         for i in range(len(trees_df)):
@@ -91,7 +90,6 @@ def _precompute():
         _edge_is_indoor.append(indoor)
         _edge_tree_lookups.append(list(tree_sindex.query(geom.buffer(0.0003))) if tree_sindex else [])
 
-    # Fast KDTree for nearest node queries
     node_coords = []
     _node_ids = []
     for node, data in G.nodes(data=True):
@@ -147,28 +145,28 @@ def get_weighted_graph(hours_offset=0):
     for i in range(len(_edge_ids)):
         eid, length = _edge_ids[i], _edge_lengths[i]
         if night: weights[eid], exposures[eid] = length, 0; continue
-        if _edge_is_indoor[i]: weights[eid], exposures[eid] = length * 0.05, 0; continue # Huge indoor bonus (95% reduction)
+        if _edge_is_indoor[i]: weights[eid], exposures[eid] = length * 0.05, 0; continue
         
-        exp = 1.0
         tidx = _edge_tree_lookups[i]
+        hits = 0
         if tidx:
             cx, cy = _edge_cx[i], _edge_cy[i]
-            shadow_hit = False
             for ti in tidx:
                 t = _trees_list[ti]
                 dx, dy = _shadow_offset(t['h'], alt, az)
-                # Fast distance check avoiding shapely Point creation
                 if math.hypot(cx - (t['cx'] + dx), cy - (t['cy'] + dy)) < 0.0001:
-                    shadow_hit = True; break
-            exp = 0.15 if shadow_hit else 1.0
+                    hits += 1
+        
+        # Cluster preference:
+        # 0 hits -> 1.0 (full sun)
+        # 1 hit -> 0.7 (some shade, small detour worth it)
+        # 2 hits -> 0.4 (good shade)
+        # 3+ hits -> 0.1 (dense shade, heavily preferred)
+        exp = max(0.1, 1.0 - (hits * 0.3))
         exposures[eid] = exp
         
-        # Reduced penalty from 25x to 8x. Still prioritizes shade but prevents dumb U-turns
-        # Distance efficiency matters more now.
         weights[eid] = length * (1.0 + exp * 8.0 * wind_factor)
         
-    # Apply dynamically as a dictionary lookup to avoid G.copy() cost
-    # Actually, G.copy() is fast enough if run once per time_offset, and caching prevents re-computation.
     G_c = G.copy()
     for eid, weight in weights.items():
         G_c.edges[eid]['weight'] = weight
@@ -182,7 +180,6 @@ def route_api(start_lat: float, start_lon: float, end_lat: float, end_lon: float
     t0 = _time.time()
     Gw = get_weighted_graph(time_offset)
     try:
-        # Fast KDTree lookup
         _, o_idx = _kdtree.query((start_lon, start_lat))
         _, d_idx = _kdtree.query((end_lon, end_lat))
         o, d = _node_ids[o_idx], _node_ids[d_idx]
@@ -222,3 +219,8 @@ def buildings_api():
 def pois_api():
     p = os.path.join(BASE_DIR, "ucd_pois.json")
     return json.load(open(p)) if os.path.exists(p) else []
+
+@app.get("/community_spots")
+def spots_api():
+    p = os.path.join(BASE_DIR, "community_spots.json")
+    return json.load(open(p)) if os.path.exists(p) else {"type":"FeatureCollection","features":[]}
