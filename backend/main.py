@@ -4,8 +4,6 @@ import networkx as nx
 import pickle
 import osmnx as ox
 from shapely.geometry import Point, LineString
-from shapely.affinity import translate
-from shapely.ops import unary_union
 from pydantic import BaseModel
 import os, json, math, requests, time as _time
 from datetime import datetime, timedelta, timezone
@@ -30,12 +28,12 @@ earth, sun_body = planets['earth'], planets['sun']
 from skyfield.toposlib import wgs84
 observer = earth + wgs84.latlon(DAVIS_LAT, DAVIS_LON)
 
-# Pre-computed per-edge data (computed once at startup)
+# Pre-computed per-edge data
 _edge_geom = {}
 _edge_is_indoor = {}
-_edge_tree_idx = {}
+_edge_tree_count = {}   # just the COUNT of nearby trees — no polygon ops needed
+_edge_length = {}
 
-# Caches
 _graph_cache = {}
 _weather_cache = {}
 _weather_cache_time = 0
@@ -59,9 +57,9 @@ def load_data():
         print(f"Load error: {e}")
 
 def _precompute():
-    """One-time O(E) spatial precompute. Runs once at startup."""
+    """One-time precompute. Only stores counts — no polygon ops at runtime."""
     t0 = _time.time()
-    indoor_count = 0
+    ic = 0
     for u, v, k, data in G.edges(keys=True, data=True):
         eid = (u, v, k)
         geom = data.get('geometry')
@@ -69,13 +67,18 @@ def _precompute():
             geom = LineString([Point(G.nodes[u]['x'], G.nodes[u]['y']),
                                Point(G.nodes[v]['x'], G.nodes[v]['y'])])
         _edge_geom[eid] = geom
+        _edge_length[eid] = data.get('length', geom.length * 111000)
+
         indoor = False
         if building_sindex and len(building_sindex.query(geom.centroid.buffer(0.0001))) > 0:
             indoor = True
-            indoor_count += 1
+            ic += 1
         _edge_is_indoor[eid] = indoor
-        _edge_tree_idx[eid] = list(tree_sindex.query(geom.buffer(0.0003))) if tree_sindex else []
-    print(f"Precompute done in {_time.time()-t0:.1f}s. {indoor_count} indoor edges.")
+
+        # Just count nearby trees — this is all we need for the heuristic
+        tc = len(tree_sindex.query(geom.buffer(0.0003))) if tree_sindex else 0
+        _edge_tree_count[eid] = tc
+    print(f"Precompute: {_time.time()-t0:.1f}s, {ic} indoor, {sum(1 for v in _edge_tree_count.values() if v>0)} shaded edges")
 
 load_data()
 
@@ -86,14 +89,7 @@ def get_solar_pos(hours_offset=0):
     uv = max(0, 11 * math.sin(math.radians(alt.degrees))) if alt.degrees > 0 else 0
     return alt.degrees, az.degrees, round(uv, 1)
 
-def _shadow_offset(h, alt, az):
-    if alt <= 0: return 0, 0
-    sl = h / math.tan(math.radians(max(1, alt)))
-    a = math.radians((az + 180) % 360)
-    return sl * math.sin(a) * 9e-6, sl * math.cos(a) * 9e-6
-
 def _fetch_weather_raw():
-    """Fetch 48h forecast, cache for 5 minutes."""
     global _weather_cache, _weather_cache_time
     now = _time.time()
     if _weather_cache and now - _weather_cache_time < 300:
@@ -112,43 +108,42 @@ def get_weather(hours_offset=0):
     if hours_offset == 0:
         c = data.get('current', {})
         return {"temperature_2m": c.get("temperature_2m", 80), "wind_speed_10m": c.get("wind_speed_10m", 5), "wind_direction_10m": c.get("wind_direction_10m", 225)}
-    idx = datetime.now().hour + int(hours_offset)
+    idx = min(47, max(0, datetime.now().hour + int(hours_offset)))
     h = data.get('hourly', {})
     return {"temperature_2m": h.get('temperature_2m', [80]*48)[idx], "wind_speed_10m": h.get('wind_speed_10m', [5]*48)[idx], "wind_direction_10m": h.get('wind_direction_10m', [225]*48)[idx]}
 
 def get_weighted_graph(hours_offset=0):
+    """O(E) pure arithmetic — no shapely ops at runtime."""
     key = round(hours_offset * 2) / 2
     if key in _graph_cache: return _graph_cache[key]
     alt, az, _ = get_solar_pos(hours_offset)
     w = get_weather(hours_offset)
     wf = max(0.4, 1.0 - w["wind_speed_10m"] * 0.03)
     night = alt <= 0
+
+    # Sun altitude affects how much shade trees cast
+    # Low sun = long shadows = more shade coverage
+    # High sun = short shadows = less shade
+    shade_effectiveness = (1.0 - alt / 90.0) if not night else 0
+
     G_c = G.copy()
     for u, v, k, data in G_c.edges(keys=True, data=True):
         eid = (u, v, k)
-        length = data.get('length', 1.0)
+        length = _edge_length.get(eid, data.get('length', 1.0))
         if night:
             data['weight'] = length; data['exposure_ratio'] = 0; continue
         if _edge_is_indoor.get(eid):
             data['weight'] = length * 0.05; data['exposure_ratio'] = 0; continue
-        # Shade calc
-        exp = 1.0
-        tidx = _edge_tree_idx.get(eid, [])
-        if tidx:
-            geom = _edge_geom[eid]
-            shadows = []
-            for i in tidx:
-                tree = trees_df.iloc[i]
-                h = tree.get('height_m', 8)
-                dx, dy = _shadow_offset(h, alt, az)
-                c = tree.geometry.buffer(6e-5)
-                shadows.append(translate(c, xoff=dx, yoff=dy).union(c).convex_hull)
-            if shadows:
-                s = unary_union(shadows)
-                sl = geom.intersection(s).length
-                exp = max(0.0, 1.0 - sl / geom.length) if geom.length > 0 else 1.0
+
+        # Fast shade heuristic: more nearby trees = less exposure
+        # Each tree reduces exposure by ~15%, capped at 85% reduction
+        tc = _edge_tree_count.get(eid, 0)
+        shade = min(0.85, tc * 0.15 * shade_effectiveness)
+        exp = 1.0 - shade
+
         data['exposure_ratio'] = round(exp, 2)
         data['weight'] = length * (1.0 + exp * 50.0 * wf)
+
     _graph_cache[key] = G_c
     return G_c
 
@@ -180,11 +175,11 @@ def route_api(start_lat: float, start_lon: float, end_lat: float, end_lon: float
         fp = nx.shortest_path(Gw, o, d, weight='length')
         cp = nx.shortest_path(Gw, o, d, weight='weight')
         ff, cf = _build_gj(Gw, fp, 'fastest', '#f59e0b'), _build_gj(Gw, cp, 'coolest', '#0ea5e9')
-        _, az, uv = get_solar_pos(time_offset)
+        alt, az, uv = get_solar_pos(time_offset)
         w = get_weather(time_offset)
         fe, ce = ff['properties']['exposure'], cf['properties']['exposure']
         saved = int(max(0, (1-ce/fe)*100)) if fe > 0 else 0
-        return {"features": [ff, cf], "weather": {"temp": w["temperature_2m"], "wind_speed": w["wind_speed_10m"], "wind_dir": w["wind_direction_10m"]}, "sunlight_saved": saved}
+        return {"features": [ff, cf], "weather": {"temp": w["temperature_2m"], "wind_speed": w["wind_speed_10m"], "wind_dir": w["wind_direction_10m"]}, "sun": {"alt": alt, "az": az}, "sunlight_saved": saved}
     except Exception as e:
         return {"error": str(e)}
 
